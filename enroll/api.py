@@ -2,6 +2,13 @@ import sqlite3
 import contextlib
 import requests
 
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+
+
+
+
+
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from pydantic_settings import BaseSettings
 WAITLIST_MAXIMUM = 15
@@ -74,27 +81,35 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     
     class_section = classes["SectionNumber"]
     count = db.execute("SELECT COUNT() FROM Enrollments WHERE ClassID = ?", (classid,)).fetchone()[0]
-    waitlist_count = db.execute("SELECT COUNT() FROM Waitlists WHERE ClassID = ?", (classid,)).fetchone()[0]
+    #count = r.zcard(f"enroll:{classid}:{sectionid}")
+    #waitlist_count = db.execute("SELECT COUNT() FROM Waitlists WHERE ClassID = ?", (classid,)).fetchone()[0]
+    waitlist_count = r.zcard(f"waitlist:{classid}:{sectionid}")  # REDIS    
     print(count)
     if count < classes["MaximumEnrollment"]:
         db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber) VALUES(?,?,?)",(studentid, classid, class_section))
         db.commit()
         return {"message": f"Enrolled student {studentid} in section {class_section} of class {classid}."}
     elif waitlist_count < classes["WaitlistMaximum"]:
-        waitlisted = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
+        #waitlisted = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
+        waitlisted = r.zscore(f"waitlist:{classid}:{sectionid}", name)  # REDIS
         if waitlisted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Student already waitlisted")
 
-        max_waitlist_position = db.execute("SELECT MAX(Position) FROM Waitlists WHERE ClassID = ? AND  SectionNumber = ?",(classid,sectionid)).fetchone()[0]
-        print("Position: " + str(max_waitlist_position))
+        #max_waitlist_position = db.execute("SELECT MAX(Position) FROM Waitlists WHERE ClassID = ? AND  SectionNumber = ?",(classid,sectionid)).fetchone()[0]
+        max_waitlist_position = r.zcard(f"waitlist:{classid}:{sectionid}")  # REDIS
+        print("Position: " + str(max_waitlist_position + 1))
         if not max_waitlist_position: max_waitlist_position = 0
+
+        ########################### REDIS
+        r.zadd(f"waitlist:{classid}:{sectionid}", {name: max_waitlist_position + 1}) #REDIS
         db.execute("INSERT INTO Waitlists(StudentID, ClassID, SectionNumber, Position) VALUES(?,?,?,?)",(studentid, classid, class_section, max_waitlist_position + 1))
         db.commit()
         return {"message": f"Enrolled in waitlist {class_section} of class {classid}."}
     else:
         return {"message": f"Unable to enroll in waitlist for the class, reached the maximum number of students"}
+
 
 @app.delete("/enrollmentdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
@@ -111,13 +126,25 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
     query = db.execute("UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
     db.commit()
     # Add student to class if there are students in the waitlist for this class
-    next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
+    #next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
+    next_on_waitlist = r.zrange(f"waitlist:{classid}:{sectionid}", 0, 0)  # REDIS
     if next_on_waitlist:
         try:
+            ##### ISSUE HERE, NEED TO GET THE STUDENTID FROM THE WAITLIST, ONLY HAVE THE NAME ######
             db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
-                            VALUES (?, ?, ?,'ENROLLED')", (next_on_waitlist['StudentID'], classid, sectionid))
-            db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-            db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+                            VALUES (?, ?, ?,'ENROLLED')", (int(next_on_waitlist[1]), classid, sectionid))
+            
+            
+            #db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
+            removed_score = r.zscore(f"waitlist:{classid}:{sectionid}", name)
+            r.zrem(f"waitlist:{classid}:{sectionid}", name)  # REDIS
+
+            ## Update the waitlist positions
+            members = r.zrange(f"waitlist:{classid}:{sectionid}", 0, -1, withscores=True)  # REDIS
+            for member, score in members:
+                if score > removed_score:
+                    r.zadd(f"waitlist:{classid}:{sectionid}", {member: score - 1})
+            #db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
             db.commit()
         except sqlite3.IntegrityError as e:
             raise HTTPException(
@@ -134,27 +161,38 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
         ]}
     return {"Result": [{"Student dropped from class": dropped_student} ]}
 
-@app.delete("/waitlistdrop/{studentid}/{classid}/{name}/{username}/{email}/{roles}")
-def remove_student_from_waitlist(studentid: int, classid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+@app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
+def remove_student_from_waitlist(studentid: int, classid: int, sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
-    exists = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
+    #exists = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
+    exists = r.zscore(f"waitlist:{classid}:{sectionid}", name)  # REDIS
     if not exists:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"Error": "No such student found in the given class on the waitlist"}
         )
-    db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
-    db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+    removed_score = r.zscore(f"waitlist:{classid}:{sectionid}", name)  # REDIS
+    #db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
+    r.zrem(f"waitlist:{classid}:{sectionid}", name)  # REDIS
+
+    ## Update the waitlist positions
+    members = r.zrange(f"waitlist:{classid}:{sectionid}", 0, -1, withscores=True)  # REDIS
+    for member, score in members:
+        if score > removed_score:
+            r.zadd(f"waitlist:{classid}:{sectionid}", {member: score - 1})
+    #db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+
     db.commit()
     return {"Element removed": exists}
     
-@app.get("/waitlist/{studentid}/{classid}/{name}/{username}/{email}/{roles}")
-def view_waitlist_position(studentid: int, classid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+@app.get("/waitlist/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
+def view_waitlist_position(studentid: int, classid: int, sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
     position = None
-    position = db.execute("SELECT Position FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid,classid,)).fetchone()
+    #position = db.execute("SELECT Position FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid,classid,)).fetchone()
+    position = r.zscore(f"waitlist:{classid}:{sectionid}", name)  # REDIS
     
     if position:
         message = f"Student {studentid} is on the waitlist for class {classid} in position"
@@ -203,8 +241,8 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
         raise HTTPException(status_code=404, detail="No dropped students found for this class.")
     return {"Dropped Students ID": [student["StudentID"] for student in dropped_students]}
 
-@app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
-def drop_student_administratively(instructorid: int, classid: int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+@app.delete("/drop/{instructorid}/{classid}/{sectionid}/{studentid}/{name}/{username}/{email}/{roles}")
+def drop_student_administratively(instructorid: int, classid: int, sectionid:int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
     check_user(instructorid, username, name, email, roles, db)
     instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=?",(classid,)).fetchone()
@@ -226,13 +264,16 @@ def drop_student_administratively(instructorid: int, classid: int, studentid: in
         raise HTTPException(status_code=404, detail="Student, class, or section not found.")
     
     # Add student to class if there are students in the waitlist for this class
-    next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
+    #next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
+    next_on_waitlist = r.zrange(f"waitlist:{classid}:{sectionid}", 0, 0)  # REDIS
     if next_on_waitlist:
         try:
             db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
                             VALUES (?, ?, (SELECT SectionNumber FROM Classes WHERE ClassID=?), 'ENROLLED')", (next_on_waitlist['StudentID'], classid, classid))
-            db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-            db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+            #db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
+            r.zrem(f"waitlist:{classid}:{sectionid}", name)  # REDIS
+            #db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+
             db.commit()
         except sqlite3.IntegrityError as e:
             raise HTTPException(
@@ -255,10 +296,12 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
         )
     
     query = "SELECT * FROM Students INNER JOIN (SELECT StudentID, Position FROM Waitlists WHERE ClassID = ? AND SectionNumber =? ORDER BY Position) as w on Students.StudentID = w.StudentID"
-    waitlist = db.execute(query, (classid, sectionid)).fetchall()
+    #waitlist = db.execute(query, (classid, sectionid)).fetchall()
+    waitlist = r.zrange(f"waitlist:{classid}:{sectionid}", 0, -1)  # REDIS
     if not waitlist:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class")
     return {"Waitlist": [{"student_id": student["StudentID"]} for student in waitlist]}
+
 
 ### Registrar related endpoints
 
