@@ -5,3 +5,4 @@ enroll_1: uvicorn --port $PORT enroll.api:app --reload
 enroll_2: uvicorn --port $PORT enroll.api:app --reload
 enroll_3: uvicorn --port $PORT enroll.api:app --reload
 krakend: echo krakend.json | entr -nrz krakend run --port $PORT --config krakend.json
+#DynamoDB: java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb -port $PORT
