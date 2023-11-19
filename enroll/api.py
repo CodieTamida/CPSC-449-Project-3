@@ -200,39 +200,83 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
 def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
-    # Try to Remove student from the class
-    
-    dropped_student = db.execute("SELECT StudentID FROM Enrollments WHERE StudentID = ? AND ClassID = ? AND SectionNumber = ?",(studentid,classid,sectionid)).fetchone()
-    if not dropped_student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Student and class combination not found")
 
-    query = db.execute("UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
-    db.commit()
+    # Try to Remove student from the class
+    dropped_student = dynamodb_resource.execute_statement(
+        Statement=f"SELECT StudentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}",
+        ConsistentRead=True
+    )
+    if not dropped_student['Items']:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student and class combination not found"
+        )
+
     # Add student to class if there are students in the waitlist for this class
-    next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
-    if next_on_waitlist:
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
+    waitlist_count = r.zcard(waitlist_key)
+    print("count:", waitlist_count)
+
+    if waitlist_count > 0:
+        # Retrieve all items from the waitlist
+        next_on_waitlist = r.zrange(waitlist_key, 0, 14, withscores=True)
+        print("Waitlist:", next_on_waitlist)
+        next_students = [int(student[0]) for student in next_on_waitlist]
+        print("Next students:", next_students)
+
         try:
-            db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
-                            VALUES (?, ?, ?,'ENROLLED')", (next_on_waitlist['StudentID'], classid, sectionid))
-            db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-            db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
-            db.commit()
-        except sqlite3.IntegrityError as e:
+            # Determine the number of students to enroll from the waitlist
+            students_to_enroll = min(30 - waitlist_count, len(next_students))
+
+            response = dynamodb_resource.execute_statement(
+                Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0  ORDER BY EnrollmentID DESC ;",
+                ConsistentRead=True
+            )
+            enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
+
+            # Find the maximum 'EnrollmentID'
+            max_enrollment_id = max(enrollment_ids, default=0) + 1
+
+            print("next_enrollment_id", sorted(enrollment_ids))
+            print(f"The maximum EnrollmentID is: {max_enrollment_id}")
+
+            # If there are existing items, increment the ID, otherwise, start from 1
+            next_enrollment_id = int(response['Items'][0]['EnrollmentID']['N']) + 1
+
+            # Enroll students from the waitlist
+            for i in range(students_to_enroll):
+                next_student_id = next_students[i]
+
+                # Insert the new item with the auto-incremented EnrollmentID
+                dynamodb_resource.put_item(
+                    TableName="Enrollments",
+                    Item={
+                        "EnrollmentID": {"N": str(max_enrollment_id)},
+                        "StudentID": {"N": str(next_student_id)},
+                        "ClassID": {"N": str(classid)},
+                    },
+                    ConditionExpression="attribute_not_exists(EnrollmentID)",  
+                )
+                r.zpopmin(waitlist_key)
+
+                # Increment the next enrollment ID for the next iteration
+                max_enrollment_id += 1
+
+            return {"Result": [
+                {"Student dropped from class": dropped_student['Items']},
+                {"Student added to class": next_students},
+                {"Students added from waitlist": students_to_enroll},
+            ]}
+        except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "ErrorType": type(e).__name__, 
+                    "ErrorType": type(e).__name__,
                     "ErrorMessage": str(e)
                 },
             )
-        
-        return {"Result": [
-            {"Student dropped from class": dropped_student}, 
-            {"Student added from waitlist": next_on_waitlist},
-        ]}
-    return {"Result": [{"Student dropped from class": dropped_student} ]}
+
+    return {"Result": [{"Student dropped from class": dropped_student['Items']}]}
 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
