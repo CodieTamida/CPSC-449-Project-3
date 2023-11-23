@@ -453,23 +453,62 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
 
 ################# End of endpoint-8 #################
 
+################# endpoint-9 #################
 
+#############SQLITE################
+# @app.get("/waitlist/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
+# def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+#     roles = [word.strip() for word in roles.split(",")]
+#     check_user(instructorid, username, name, email, roles, db)
+#     instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=? AND SectionNumber=?",(classid,sectionid)).fetchone()
+#     if not instructor_class:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
+#         )
+    
+#     query = "SELECT * FROM Students INNER JOIN (SELECT StudentID, Position FROM Waitlists WHERE ClassID = ? AND SectionNumber =? ORDER BY Position) as w on Students.StudentID = w.StudentID"
+#     waitlist = db.execute(query, (classid, sectionid)).fetchall()
+#     if not waitlist:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class")
+#     return {"Waitlist": [{"student_id": student["StudentID"]} for student in waitlist]}
 
+#############DYNAMODB################
 @app.get("/waitlist/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
     roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles, db)
-    instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=? AND SectionNumber=?",(classid,sectionid)).fetchone()
-    if not instructor_class:
+    check_user(instructorid, username, name, email, roles)
+
+    # Check if instructor has the class
+    instructor_class = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM InstructorClasses WHERE InstructorID={instructorid} AND ClassID={classid}",
+        ConsistentRead=True
+    )
+    if not instructor_class['Items']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
         )
     
-    query = "SELECT * FROM Students INNER JOIN (SELECT StudentID, Position FROM Waitlists WHERE ClassID = ? AND SectionNumber =? ORDER BY Position) as w on Students.StudentID = w.StudentID"
-    waitlist = db.execute(query, (classid, sectionid)).fetchall()
-    if not waitlist:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class")
-    return {"Waitlist": [{"student_id": student["StudentID"]} for student in waitlist]}
+    # Check if there are students in the waitlist/if waitlist exists
+    waitlist_key = f"waitlist{classid}:{sectionid}"
+    if not r.exists(waitlist_key):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class"
+        )
+    
+    # Fetch students from waitlist in Redis
+    waitlisted_students = r.zrange(waitlist_key, 0, -1, withscores=False)
+
+    waitlist = []
+    for student_id in waitlisted_students:
+        students = dynamodb_resource.execute_statement(
+            Statement=f"SELECT * FROM Students WHERE StudentID={student_id.decode('utf-8')}",
+            ConsistentRead=True
+        )
+        waitlist.append(students['Items'])
+
+    return {"Waitlist": waitlist}
+
+################# End of endpoint-9 #################
 
 ### Registrar related endpoints
 
