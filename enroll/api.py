@@ -46,18 +46,48 @@ def check_id_exists_in_table(id_name: str,id_val: int, table_name: str, db: sqli
     else:
         return False
 
-def check_user(id_val: int, username: str, name: str, email: str, roles: list, db: sqlite3.Connection = Depends(get_db)):
-    vals = db.execute(f"SELECT * FROM Users WHERE UserId = ?",(id_val,)).fetchone()
-    if not vals:
-        db.execute("INSERT INTO Users(Userid, Username, FullName, Email) VALUES(?,?,?,?)",(id_val, username, name, email))
 
+#####SQLite check_user function
+# def check_user(id_val: int, username: str, name: str, email: str, roles: list, db: sqlite3.Connection = Depends(get_db)):
+#     vals = db.execute(f"SELECT * FROM Users WHERE UserId = ?",(id_val,)).fetchone()
+#     if not vals:
+#         db.execute("INSERT INTO Users(Userid, Username, FullName, Email) VALUES(?,?,?,?)",(id_val, username, name, email))
+
+#         if "Student" in roles:
+#             db.execute("INSERT INTO Students (StudentId) VALUES (?)",(id_val,))
+
+#         if "Instructor" in roles:
+#             db.execute("INSERT INTO Instructors (InstructorId) VALUES (?)",(id_val,))
+        
+#         db.commit()
+
+#####DynamoDB check_user function
+def check_user(id_val: int, username: str, name: str, email: str, roles: list):
+    # Check if user exists in Users table in DynamoDB
+    response = dynamodb_resource.execute_statement(
+        Statement=f"Select * FROM Users WHERE UserId={id_val}",
+        ConsistentRead=True
+    )
+    if not response['Items']:
+        # Insert user into Users table
+        dynamodb_resource.execute_statement(
+            Statement=f"INSERT INTO Users VALUE {{'UserId':{id_val},'Username':{username},'FullName':{name},'Email':{email}}}",
+            ConsistentRead=True
+
+        )
+        # Check roles and insert into appropriate table
         if "Student" in roles:
-            db.execute("INSERT INTO Students (StudentId) VALUES (?)",(id_val,))
+            dynamodb_resource.execute_statement(
+                Statement=f"INSERT INTO Students VALUE {{'StudentId':{id_val}}}",
+                ConsistentRead=True
+            )
 
         if "Instructor" in roles:
-            db.execute("INSERT INTO Instructors (InstructorId) VALUES (?)",(id_val,))
+            dynamodb_resource.execute_statement(
+                Statement=f"INSERT INTO Instructors VALUE {{'InstructorId':{id_val}}}",
+                ConsistentRead=True
+            )
         
-        db.commit()
 
 ### Student related endpoints
 
@@ -316,46 +346,114 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
         raise HTTPException(status_code=404, detail="No dropped students found for this class.")
     return {"Dropped Students ID": [student["StudentID"] for student in dropped_students]}
 
+################# endpoint-8 #################
+
+#############SQLITE################
+
+# @app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
+# def drop_student_administratively(instructorid: int, classid: int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+#     roles = [word.strip() for word in roles.split(",")]
+#     check_user(instructorid, username, name, email, roles, db)
+#     instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=?",(classid,)).fetchone()
+#     if not instructor_class:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
+#         )
+    
+#     in_class = db.execute("SELECT * FROM Enrollments WHERE classID=? AND EnrollmentStatus='ENROLLED' AND StudentID=?",(classid, studentid)).fetchone()
+#     if not in_class:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND, detail="Student is not enrolled"
+#         )
+
+#     query = "UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?"
+#     result = db.execute(query, (studentid, classid))
+#     db.commit()
+#     if result.rowcount == 0:
+#         raise HTTPException(status_code=404, detail="Student, class, or section not found.")
+    
+#     # Add student to class if there are students in the waitlist for this class
+#     next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
+#     if next_on_waitlist:
+#         try:
+#             db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
+#                             VALUES (?, ?, (SELECT SectionNumber FROM Classes WHERE ClassID=?), 'ENROLLED')", (next_on_waitlist['StudentID'], classid, classid))
+#             db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
+#             db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
+#             db.commit()
+#         except sqlite3.IntegrityError as e:
+#             raise HTTPException(
+#                 status_code=status.HTTP_400_BAD_REQUEST,
+#                 detail={
+#                     "ErrorType": type(e).__name__, 
+#                     "ErrorMessage": str(e)
+#                 },
+#             )
+#     return {"message": f"Student {studentid} has been administratively dropped from class {classid}"}
+
+#############DYNAMODB################
 @app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
-def drop_student_administratively(instructorid: int, classid: int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
+def drop_student_administratively(instructorid: int, classid: int, sectionid: int, studentid: int, name: str, username: str, email: str, roles: str):
     roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles, db)
-    instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=?",(classid,)).fetchone()
-    if not instructor_class:
+    check_user(instructorid, username, name, email, roles)
+
+    # Check if instructor has the class
+    instructor_class = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM InstructorClasses WHERE InstructorID={instructorid} AND ClassID={classid}",
+        ConsistentRead=True
+    )
+    if not instructor_class['Items']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
         )
     
-    in_class = db.execute("SELECT * FROM Enrollments WHERE classID=? AND EnrollmentStatus='ENROLLED' AND StudentID=?",(classid, studentid)).fetchone()
-    if not in_class:
+    # Check if student is enrolled in the class
+    in_class = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM Enrollments WHERE ClassID={classid} AND EnrollmentStatus='ENROLLED' AND StudentID={studentid}",
+        ConsistentRead=True
+    )
+    if not in_class['Items']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Student is not enrolled"
         )
-
-    query = "UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?"
-    result = db.execute(query, (studentid, classid))
-    db.commit()
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Student, class, or section not found.")
     
-    # Add student to class if there are students in the waitlist for this class
-    next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
-    if next_on_waitlist:
-        try:
-            db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
-                            VALUES (?, ?, (SELECT SectionNumber FROM Classes WHERE ClassID=?), 'ENROLLED')", (next_on_waitlist['StudentID'], classid, classid))
-            db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-            db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
-            db.commit()
-        except sqlite3.IntegrityError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "ErrorType": type(e).__name__, 
-                    "ErrorMessage": str(e)
-                },
-            )
-    return {"message": f"Student {studentid} has been administratively dropped from class {classid}"}
+    # Update EnrollmentStatus to DROPPED
+    dynamodb_resource.execute_statement(
+        Statement=f"UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = {studentid} AND ClassID = {classid}",
+        ConsistentRead=True
+    )
+
+    # Add student to class if there are students in the waitlist for this class (Using Redis)
+
+    # Check waitlist for class and section in Redis
+    waitlist_key = f"waitlist{classid}:{sectionid}"
+
+    # Check if there are students in the waitlist
+    if r.zcard(waitlist_key) > 0:
+        # Get student ID of next student in waitlist
+        next_student_id = int(r.zrange(waitlist_key, 0, 0, withscores=False)[0])
+
+        # Remove student from waitlist
+        r.zrem(waitlist_key, next_student_id)
+
+        # Generate new enrollment ID
+        enrollment_id = int(dynamodb_resource.execute_statement(
+            Statement=f"SELECT * FROM Enrollments",
+            ConsistentRead=True
+        )['Items'][-1]['EnrollmentID']['N']) + 1
+
+        # Enroll student in class
+        dynamodb_resource.execute_statement(
+            Statement=f"INSERT INTO Enrollments VALUE {{'EnrollmentID':{enrollment_id},'StudentID':{next_student_id},'SectionNumber':{sectionid},'ClassID':{classid},'EnrollmentStatus':'ENROLLED'}}",
+            ConsistentRead=True
+        )
+        return {"message": f"Student {studentid} has been administratively dropped from class {classid}. Student {next_student_id} has been enrolled in their place from the waitlist."}
+    
+    return {"message": f"Student {studentid} has been administratively dropped from class {classid}. There are no students in the waitlist for this class."}
+
+################# End of endpoint-8 #################
+
+
 
 @app.get("/waitlist/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
