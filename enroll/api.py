@@ -392,7 +392,7 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
 #     return {"message": f"Student {studentid} has been administratively dropped from class {classid}"}
 
 #############DYNAMODB################
-@app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
+@app.delete("/drop/{instructorid}/{classid}/{sectionid}/{studentid}/{name}/{username}/{email}/{roles}")
 def drop_student_administratively(instructorid: int, classid: int, sectionid: int, studentid: int, name: str, username: str, email: str, roles: str):
     roles = [word.strip() for word in roles.split(",")]
     check_user(instructorid, username, name, email, roles)
