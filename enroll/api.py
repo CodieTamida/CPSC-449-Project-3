@@ -237,8 +237,13 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles, db)
-    exists=r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
+    user = db.execute("SELECT * FROM Users WHERE UserId = ?", (studentid,)).fetchone()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    exists=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     if not exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -252,12 +257,12 @@ def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, nam
     #         detail={"Error": "No such student found in the given class on the waitlist"}
     #     )
     # db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
-    removed_score=r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
-    r.zrem(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
-    members=r.zrange(f"waitlist{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+    removed_score=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
+    r.zrem(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
+    members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
     for member,score in members:
         if score>removed_score:
-            r.zincrby(f"waitlist{classid}:{sectionid}",-1,member)
+            r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
     # db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
     # db.commit()
     return {"Element removed": exists}
@@ -267,7 +272,7 @@ def view_waitlist_position(studentid: int, classid: int,sectionid:int, name: str
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
     position = None
-    position = r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
+    position = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     
     if position:
         message = f"Student {studentid} is on the waitlist for class {classid} in position"
