@@ -237,7 +237,12 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles, db)
+    user = db.execute("SELECT * FROM Users WHERE UserId = ?", (studentid,)).fetchone()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
     exists=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     if not exists:
         raise HTTPException(
