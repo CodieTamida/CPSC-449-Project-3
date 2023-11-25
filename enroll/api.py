@@ -402,7 +402,7 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
 #Test add to Redis waitlist
 @app.post("/test/waitlist/{classid}/{sectionid}/{studentid}")
 def add_to_waitlist(classid: int, sectionid: int, studentid: int):
-    waitlist_key = f"waitlist{classid}:{sectionid}"
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
     waitlist_position = r.zcard(waitlist_key) + 1
 
     r.zadd(waitlist_key, {studentid: waitlist_position})
@@ -437,7 +437,7 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
 
     )
     # Check waitlist for class and section in Redis
-    waitlist_key = f"waitlist{classid}:{sectionid}"
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
 
     # Check if there are students in the waitlist
     if r.zcard(waitlist_key) > 0:
@@ -445,7 +445,15 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
         next_student_id = int(r.zrange(waitlist_key, 0, 0, withscores=False)[0])
 
         # Remove student from waitlist
+        next_student_score = r.zscore(waitlist_key, next_student_id)
         r.zrem(waitlist_key, next_student_id)
+
+        # Decrement position of all students in waitlist with position greater than the student removed
+        members = r.zrange(waitlist_key, 0, -1, withscores=True)
+        for member, score in members:
+            if score > next_student_score:
+                r.zincrby(waitlist_key, -1, member)
+        
 
         enrollment_id = dynamodb_resource.execute_statement(
             Statement=f"SELECT * FROM Enrollments",
