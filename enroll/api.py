@@ -288,39 +288,53 @@ def view_waitlist_position(studentid: int, classid: int,sectionid:int, name: str
 ### Instructor related endpoints
 
 @app.get("/enrolled/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def view_enrolled(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles, db)
-    instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=? AND SectionNumber=?",(classid,sectionid)).fetchone()
-    if not instructor_class:
+def view_enrolled(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
+
+    instructor_class = dynamodb_resource.execute_statement(
+        Statement=f"Select * FROM InstructorClasses WHERE ClassID={classid} AND SectionNumber={sectionid}",
+        ConsistentRead=True
+        )
+    if not instructor_class['Items']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
         )
+    enrolled_students = dynamodb_resource.execute_statement(
+        Statement=f"Select * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid} AND EnrollmentStatus='ENROLLED'",
+        ConsistentRead=True
+    )
 
-    enrolled_students = db.execute("SELECT StudentID FROM Enrollments WHERE classID=? AND SectionNumber=? AND EnrollmentStatus='ENROLLED'",(classid,sectionid))
-    enrolled = enrolled_students.fetchall()
-    if enrolled:
-        return {"All students enrolled in this instructor's classes" : enrolled}
+    if enrolled_students:
+        student_ids = [student['StudentID']['N'] for student in enrolled_students['Items']]
+        return {"Following Student ids enrolled in instructor's class" : student_ids}
     else:
         raise HTTPException(
             status_code=status.HTTP_204_NO_CONTENT
-        )
-
+        )  
+    
 @app.get("/dropped/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def view_dropped_students(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles, db)
-    instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=? AND SectionNumber=?",(classid,sectionid)).fetchone()
-    if not instructor_class:
+def view_dropped_students(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
+    
+    instructor_class = dynamodb_resource.execute_statement(
+        Statement=f"Select * FROM InstructorClasses WHERE ClassID={classid} AND SectionNumber={sectionid}",
+        ConsistentRead=True
+        )
+    if not instructor_class['Items']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
         )
-    
-    query = "SELECT StudentID FROM Enrollments WHERE ClassID = ? AND SectionNumber = ? AND EnrollmentStatus = 'DROPPED'"
-    dropped_students = db.execute(query, (classid, sectionid)).fetchall()
-    if not dropped_students:
-        raise HTTPException(status_code=404, detail="No dropped students found for this class.")
-    return {"Dropped Students ID": [student["StudentID"] for student in dropped_students]}
+    print(instructor_class)
+    dropped_students = dynamodb_resource.execute_statement(
+        Statement=f"Select * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid} AND EnrollmentStatus='DROPPED'",
+        ConsistentRead=True
+    )
+    print(dropped_students)
+    if dropped_students:
+        student_ids = [student['StudentID']['N'] for student in dropped_students['Items']]
+        return {"Following Student ids dropped in instructor's class" : student_ids}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_204_NO_CONTENT
+        )  
 
 @app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
 def drop_student_administratively(instructorid: int, classid: int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
@@ -419,7 +433,7 @@ def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(
     db.commit()
     return {"Removed" : f"Course {classid} Section {sectionid}"}
 
-@app.put("/freeze/{isfrozen}", status_code=status.HTTP_204_NO_CONTENT)
+@app.put("/freeze/{isfrozen}")
 def freeze_enrollment(isfrozen: int):
 
     if isfrozen in [0,1]:
@@ -427,7 +441,7 @@ def freeze_enrollment(isfrozen: int):
             Statement=f"UPDATE Freeze SET IsFrozen = {isfrozen} Where FreezeFlag = 'Current_Status'",
             ConsistentRead=True
         )
-        return None  # 204 response has no content
+        return "Success"  
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="isfrozen must be 0 or 1.")
 
