@@ -7,7 +7,8 @@ import logging
 import boto3
 #from botocore.exception import ClientError
 from pprint import pprint
-from .var import dynamodb_dummy_data 
+from .var import dynamodb_dummy_data
+from pydantic import BaseModel 
 
 import redis
 r=redis.Redis(host='localhost',port=6379,db=0)
@@ -23,6 +24,11 @@ KRAKEND_PORT = "5600"
 class Settings(BaseSettings, env_file="enroll/.env", extra="ignore"):
     database: str
     logging_config: str
+
+class ClassData(BaseModel):
+    coursecode: str
+    classname: str
+
 
 def get_db():
     with contextlib.closing(sqlite3.connect(settings.database)) as db:
@@ -531,31 +537,94 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
 
 ### Registrar related endpoints
 
+################# endpoint-10 #################
+
 @app.post("/add/{classid}/{sectionid}/{professorid}/{enrollmax}/{waitmax}", status_code=status.HTTP_201_CREATED)
-def add_class(request: Request, classid: str, sectionid: str, professorid: int, enrollmax: int, waitmax: int, db: sqlite3.Connection = Depends(get_db)):
-    instructor_req = requests.get(f"http://localhost:5200/user/get/{professorid}", headers={"Authorization": request.headers.get("Authorization")})
+def add_class(class_data: ClassData, request: Request, classid: str, sectionid: str, professorid: int, enrollmax: int, waitmax: int):
+    instructor_req = requests.get(f"http://localhost:{KRAKEND_PORT}/user/get/{professorid}", headers={"Authorization": request.headers.get("Authorization")})
     instructor_info = instructor_req.json()
+
+    class_name = class_data.classname
+    course_code = class_data.coursecode
 
     if instructor_req.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Instructor does not exist",
         )
-    check_user(instructor_info["userid"], instructor_info["username"], instructor_info["name"], instructor_info["email"], instructor_info["roles"], db)
-
-    try:
-        db.execute("INSERT INTO Classes (ClassID, SectionNumber, MaximumEnrollment, WaitlistMaximum) VALUES(?, ?, ?, ?)", (classid, sectionid, enrollmax, waitmax))
-        db.execute("INSERT INTO InstructorClasses (InstructorID, ClassID, SectionNumber) VALUES(?, ?, ?)", (professorid, classid, sectionid))
-        db.commit()
-    except sqlite3.IntegrityError as e:
+    
+    # Check if user's roles include Instructor
+    if "Instructor" not in instructor_info["roles"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not an instructor",
+        )
+    
+
+    professorid = int(instructor_info["userid"])
+
+    # Check if instructor is present in Instructors table, if not add them
+    instructor_exists = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM Instructors WHERE InstructorID={professorid}",
+        ConsistentRead=True
+    )
+    if not instructor_exists['Items']:
+        dynamodb_resource.execute_statement(
+            Statement=f"INSERT INTO Instructors VALUE {{'InstructorID':{professorid}}}",
+            ConsistentRead=True
+        )
+
+    # Check if professor is already teaching this class
+    instructor_class_exists = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM InstructorClasses WHERE InstructorID={professorid} AND ClassID={classid} AND SectionNumber={sectionid}",
+        ConsistentRead=True
+    )
+    if instructor_class_exists['Items']:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Professor is already teaching this class",
+        )
+
+    # Check if class already exists
+    class_exists = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM Classes WHERE ClassID={classid} AND SectionNumber={sectionid}",
+        ConsistentRead=True
+    )
+    if class_exists['Items']:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Class already exists",
+        )
+    
+    
+
+    instructor_classes_id = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM InstructorClasses",
+        ConsistentRead=True
+    )
+    instructor_classes_id = len(instructor_classes_id['Items']) + 1
+
+    # Add class to Classes table
+    try:
+        dynamodb_resource.execute_statement(
+            Statement=f"INSERT INTO Classes VALUE {{'ClassID':{classid}, 'CourseCode':'{course_code}','SectionNumber':{sectionid}, 'Name':'{class_name}','MaximumEnrollment':{enrollmax},'WaitlistMaximum':{waitmax}}}",
+            ConsistentRead=True
+        )
+        dynamodb_resource.execute_statement(
+            Statement=f"INSERT INTO InstructorClasses VALUE {{'InstructorClassesID':{instructor_classes_id} ,'InstructorID':{professorid},'ClassID':{classid},'SectionNumber':{sectionid}}}",
+            ConsistentRead=True
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail={
                 "ErrorType": type(e).__name__, 
                 "ErrorMessage": str(e)
             },
         )
-    return {"New Class Added":f"Course {classid} Section {sectionid}"}
+    return {"New Class Added":f"Course ID:{classid} Section-{sectionid}: {class_name} ({course_code})"}
+
+################# End of endpoint-10 #################
 
 @app.delete("/remove/{classid}/{sectionid}")
 def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(get_db)):
