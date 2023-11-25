@@ -206,10 +206,10 @@ class Dynamodbmodel:
         freeze_table = self.dynamodb_resource.create_table(
             TableName='Freeze',
             KeySchema=[
-                {'AttributeName': 'IsFrozen', 'KeyType': 'HASH'}
+                {'AttributeName': 'FreezeFlag', 'KeyType': 'HASH'}
             ],
             AttributeDefinitions=[
-                {'AttributeName': 'IsFrozen', 'AttributeType': 'N'}
+                {'AttributeName': 'FreezeFlag', 'AttributeType': 'S'}
             ],
             ProvisionedThroughput={
                 'ReadCapacityUnits': 5,

@@ -99,12 +99,12 @@
                 }
             },
             {
-                "endpoint": "/student/waitlist/drop/{classid}",
+                "endpoint": "/student/waitlist/drop/{classid}/{sectionid}",
                 "method": "DELETE",
                 "output_encoding": "no-op",
                 "backend": [
                 {
-                    "url_pattern": "/waitlistdrop/{JWT.jti}/{classid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
+                    "url_pattern": "/waitlistdrop/{JWT.jti}/{classid}/{sectionid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
                     "method": "DELETE",
                     "host": [
                         "http://localhost:5300",
@@ -130,12 +130,12 @@
                 }
             },
             {
-                "endpoint": "/student/waitlist/{classid}",
+                "endpoint": "/student/waitlist/{classid}/{sectionid}",
                 "method": "GET",
                 "output_encoding": "no-op",
                 "backend": [
                 {
-                    "url_pattern": "/waitlist/{JWT.jti}/{classid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
+                    "url_pattern": "/waitlist/{JWT.jti}/{classid}/{sectionid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
                     "method": "GET",
                     "host": [
                         "http://localhost:5300",
@@ -381,12 +381,12 @@
                 }
             },
             {
-                "endpoint": "/registrar/change/{classid}/{newprofessorid}",
+                "endpoint": "/registrar/change/{classid}/{sectionnumber}/{newprofessorid}",
                 "method": "PUT",
                 "output_encoding": "no-op",
                 "backend": [
                 {
-                    "url_pattern": "/change/{classid}/{newprofessorid}",
+                    "url_pattern": "/change/{classid}/{sectionnumber}/{newprofessorid}",
                     "method": "PUT",
                     "host": [
                         "http://localhost:5300",
