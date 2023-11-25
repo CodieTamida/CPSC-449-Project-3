@@ -107,7 +107,8 @@ def list_all_classes():
         Statement="Select * FROM Classes",
         ConsistentRead=True
     )
-    return response['Items']
+    #return response['Items']
+    return {"Items":response['Items']}
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
 def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
@@ -267,8 +268,13 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles, db)
-    exists=r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
+    user = db.execute("SELECT * FROM Users WHERE UserId = ?", (studentid,)).fetchone()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    exists=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     if not exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -282,12 +288,12 @@ def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, nam
     #         detail={"Error": "No such student found in the given class on the waitlist"}
     #     )
     # db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
-    removed_score=r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
-    r.zrem(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
-    members=r.zrange(f"waitlist{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+    removed_score=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
+    r.zrem(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
+    members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
     for member,score in members:
         if score>removed_score:
-            r.zincrby(f"waitlist{classid}:{sectionid}",-1,member)
+            r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
     # db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
     # db.commit()
     return {"Element removed": exists}
@@ -297,7 +303,7 @@ def view_waitlist_position(studentid: int, classid: int,sectionid:int, name: str
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
     position = None
-    position = r.zscore(f"waitlist{classid}:{sectionid}",f"{studentid}") #REDIS
+    position = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     
     if position:
         message = f"Student {studentid} is on the waitlist for class {classid} in position"
@@ -392,24 +398,24 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
 #     return {"message": f"Student {studentid} has been administratively dropped from class {classid}"}
 
 #############DYNAMODB################
+
+#Test add to Redis waitlist
+@app.post("/test/waitlist/{classid}/{sectionid}/{studentid}")
+def add_to_waitlist(classid: int, sectionid: int, studentid: int):
+    waitlist_key = f"waitlist{classid}:{sectionid}"
+    waitlist_position = r.zcard(waitlist_key) + 1
+
+    r.zadd(waitlist_key, {studentid: waitlist_position})
+
+    return {"message": f"Student {studentid} has been added to the waitlist for class {classid} section {sectionid} in position {waitlist_position}."}
+
+
 @app.delete("/drop/{instructorid}/{classid}/{sectionid}/{studentid}/{name}/{username}/{email}/{roles}")
 def drop_student_administratively(instructorid: int, classid: int, sectionid: int, studentid: int, name: str, username: str, email: str, roles: str):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles)
-
-    # Check if instructor has the class
-    instructor_class = dynamodb_resource.execute_statement(
-        Statement=f"SELECT * FROM InstructorClasses WHERE InstructorID={instructorid} AND ClassID={classid}",
-        ConsistentRead=True
-    )
-    if not instructor_class['Items']:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
-        )
     
     # Check if student is enrolled in the class
     in_class = dynamodb_resource.execute_statement(
-        Statement=f"SELECT * FROM Enrollments WHERE ClassID={classid} AND EnrollmentStatus='ENROLLED' AND StudentID={studentid}",
+        Statement=f"SELECT * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid} AND StudentID={studentid} AND EnrollmentStatus='ENROLLED'",
         ConsistentRead=True
     )
     if not in_class['Items']:
@@ -417,14 +423,19 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
             status_code=status.HTTP_404_NOT_FOUND, detail="Student is not enrolled"
         )
     
+    enrollment_id = in_class['Items'][0]['EnrollmentID']['N']
     # Update EnrollmentStatus to DROPPED
-    dynamodb_resource.execute_statement(
-        Statement=f"UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = {studentid} AND ClassID = {classid}",
-        ConsistentRead=True
+    dynamodb_resource.update_item(
+        TableName='Enrollments',
+        Key={
+            'EnrollmentID':{'N':str(enrollment_id)}
+        },
+        UpdateExpression='SET EnrollmentStatus = :status',
+        ExpressionAttributeValues={
+            ':status': {'S': 'DROPPED'}
+        }
+
     )
-
-    # Add student to class if there are students in the waitlist for this class (Using Redis)
-
     # Check waitlist for class and section in Redis
     waitlist_key = f"waitlist{classid}:{sectionid}"
 
@@ -436,20 +447,20 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
         # Remove student from waitlist
         r.zrem(waitlist_key, next_student_id)
 
-        # Generate new enrollment ID
-        enrollment_id = int(dynamodb_resource.execute_statement(
+        enrollment_id = dynamodb_resource.execute_statement(
             Statement=f"SELECT * FROM Enrollments",
             ConsistentRead=True
-        )['Items'][-1]['EnrollmentID']['N']) + 1
+        )
+        enrollment_id = len(enrollment_id['Items']) + 1
 
         # Enroll student in class
         dynamodb_resource.execute_statement(
             Statement=f"INSERT INTO Enrollments VALUE {{'EnrollmentID':{enrollment_id},'StudentID':{next_student_id},'SectionNumber':{sectionid},'ClassID':{classid},'EnrollmentStatus':'ENROLLED'}}",
             ConsistentRead=True
         )
-        return {"message": f"Student {studentid} has been administratively dropped from class {classid}. Student {next_student_id} has been enrolled in their place from the waitlist."}
+        return {"message": f"Student {studentid} has been administratively dropped from class {classid}, section {sectionid}. Student {next_student_id} has been enrolled in their place from the waitlist."}
     
-    return {"message": f"Student {studentid} has been administratively dropped from class {classid}. There are no students in the waitlist for this class."}
+    return {"message": f"Student {studentid} has been administratively dropped from class {classid}, section {sectionid}. There are no students in the waitlist for this class section."}
 
 ################# End of endpoint-8 #################
 
