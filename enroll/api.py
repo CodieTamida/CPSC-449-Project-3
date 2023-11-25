@@ -436,9 +436,6 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
         }
 
     )
-
-    # Add student to class if there are students in the waitlist for this class (Using Redis)
-    r.zadd
     # Check waitlist for class and section in Redis
     waitlist_key = f"waitlist{classid}:{sectionid}"
 
