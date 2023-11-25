@@ -223,12 +223,12 @@
                 }
             },
             {
-                "endpoint": "/instructor/drop/{classid}/{studentid}",
+                "endpoint": "/instructor/drop/{classid}/{sectionid}/{studentid}",
                 "method": "DELETE",
                 "output_encoding": "no-op",
                 "backend": [
                 {
-                    "url_pattern": "/drop/{JWT.jti}/{classid}/{studentid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
+                    "url_pattern": "/drop/{JWT.jti}/{classid}/{sectionid}/{studentid}/{JWT.name}/{JWT.sub}/{JWT.email}/{JWT.roles}",
                     "method": "DELETE",
                     "host": [
                         "http://localhost:5300",
