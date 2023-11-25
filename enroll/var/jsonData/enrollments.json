@@ -68,6 +68,14 @@
       "ClassID": 10,
       "SectionNumber": 1,
       "EnrollmentStatus": "ENROLLED"
+    },
+    {
+      "EnrollmentID": 11,
+      "StudentID": 11,
+      "ClassID": 11,
+      "SectionNumber": 1,
+      "EnrollmentStatus": "ENROLLED"
+
     }
   ]
   

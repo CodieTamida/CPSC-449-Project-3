@@ -88,6 +88,15 @@
       "MaximumEnrollment": 30,
       "WaitlistCount": 0,
       "WaitlistMaximum": 15
+    },
+    {
+      "ClassID": 11,
+      "CourseCode": "TEST 102",
+      "SectionNumber": 1,
+      "Name": "TEST 102",
+      "MaximumEnrollment": 1,
+      "WaitlistCount": 1,
+      "WaitlistMaximum": 15
     }
   ]
   
