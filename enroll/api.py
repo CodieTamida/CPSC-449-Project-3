@@ -47,20 +47,6 @@ def check_id_exists_in_table(id_name: str,id_val: int, table_name: str, db: sqli
         return False
 
 
-#####SQLite check_user function
-# def check_user(id_val: int, username: str, name: str, email: str, roles: list, db: sqlite3.Connection = Depends(get_db)):
-#     vals = db.execute(f"SELECT * FROM Users WHERE UserId = ?",(id_val,)).fetchone()
-#     if not vals:
-#         db.execute("INSERT INTO Users(Userid, Username, FullName, Email) VALUES(?,?,?,?)",(id_val, username, name, email))
-
-#         if "Student" in roles:
-#             db.execute("INSERT INTO Students (StudentId) VALUES (?)",(id_val,))
-
-#         if "Instructor" in roles:
-#             db.execute("INSERT INTO Instructors (InstructorId) VALUES (?)",(id_val,))
-        
-#         db.commit()
-
 #####DynamoDB check_user function
 def check_user(id_val: int, username: str, name: str, email: str, roles: list):
     # Check if user exists in Users table in DynamoDB
@@ -354,51 +340,6 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
 
 ################# endpoint-8 #################
 
-#############SQLITE################
-
-# @app.delete("/drop/{instructorid}/{classid}/{studentid}/{name}/{username}/{email}/{roles}")
-# def drop_student_administratively(instructorid: int, classid: int, studentid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-#     roles = [word.strip() for word in roles.split(",")]
-#     check_user(instructorid, username, name, email, roles, db)
-#     instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=?",(classid,)).fetchone()
-#     if not instructor_class:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
-#         )
-    
-#     in_class = db.execute("SELECT * FROM Enrollments WHERE classID=? AND EnrollmentStatus='ENROLLED' AND StudentID=?",(classid, studentid)).fetchone()
-#     if not in_class:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND, detail="Student is not enrolled"
-#         )
-
-#     query = "UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?"
-#     result = db.execute(query, (studentid, classid))
-#     db.commit()
-#     if result.rowcount == 0:
-#         raise HTTPException(status_code=404, detail="Student, class, or section not found.")
-    
-#     # Add student to class if there are students in the waitlist for this class
-#     next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
-#     if next_on_waitlist:
-#         try:
-#             db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
-#                             VALUES (?, ?, (SELECT SectionNumber FROM Classes WHERE ClassID=?), 'ENROLLED')", (next_on_waitlist['StudentID'], classid, classid))
-#             db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-#             db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
-#             db.commit()
-#         except sqlite3.IntegrityError as e:
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail={
-#                     "ErrorType": type(e).__name__, 
-#                     "ErrorMessage": str(e)
-#                 },
-#             )
-#     return {"message": f"Student {studentid} has been administratively dropped from class {classid}"}
-
-#############DYNAMODB################
-
 #Test add to Redis waitlist
 @app.post("/test/waitlist/{classid}/{sectionid}/{studentid}")
 def add_to_waitlist(classid: int, sectionid: int, studentid: int):
@@ -471,8 +412,6 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
     return {"message": f"Student {studentid} has been administratively dropped from class {classid}, section {sectionid}. There are no students in the waitlist for this class section."}
 
 ################# End of endpoint-8 #################
-
-
 
 @app.get("/waitlist/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
