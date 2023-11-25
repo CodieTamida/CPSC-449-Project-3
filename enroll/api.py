@@ -206,29 +206,43 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
     # Try to Remove student from the class
     response = dynamodb_resource.execute_statement(
-        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}"
+        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}  AND SectionNumber={sectionid}"
     )
-    enrollment_id = response['Items'][0]['EnrollmentID']['N']
-    print(f'EnrollmentID: {enrollment_id}')
+    try:
+        if response.get('Items'):
+            enrollment_id = response['Items'][0].get('EnrollmentID', {}).get('N')
 
-    dropped_student = dynamodb_resource.execute_statement(
-        Statement = f"DELETE from Enrollments where EnrollmentID = {enrollment_id}"
-    )
+            if enrollment_id is not None:
+                print(f'EnrollmentID: {enrollment_id}')
 
-    if dropped_student:
-        print("Student dropped")
+                # Attempt to drop the student
+                dropped_student = dynamodb_resource.execute_statement(
+                    Statement=f"DELETE FROM Enrollments WHERE EnrollmentID = {enrollment_id}"
+                )
 
-    else:
-        print("student does not exist")
+                if dropped_student:
+                    print("Student dropped")
+                else:
+                    print("Failed to drop the student")
+            else:
+                # Handle the case where 'EnrollmentID' key is not present in the response
+                return {"Result": [{"EnrollmentID not found in the response. Student not enrolled in class"}]}
+        else:
+            # Handle the case where 'Items' is an empty list
+            return {"Result": [{"No enrollment records found. Student not enrolled in class"}]}
+    
+    except Exception as e:
+    # Handle other potential exceptions
+        print(f"An error occurred: {e}")
 
     # Add student to class if there are students in the waitlist for this class
     waitlist_key = f"waitlist:{classid}:{sectionid}"
     waitlist_count = r.zcard(waitlist_key)
-    print("count:", waitlist_count)
+    print("People in waitlist:", waitlist_count)
 
     if waitlist_count > 0:
         # Retrieve one student from the waitlist
-        next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
+        next_on_waitlist = r.zrange(waitlist_key, 1, 1, withscores=True)
         
         if not next_on_waitlist:
             return {"Result": [{"No students on the waitlist"}]}
@@ -246,8 +260,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
             # Find the maximum 'EnrollmentID'
             max_enrollment_id = max(enrollment_ids, default=0) + 1
-
-            print("next_enrollment_id", sorted(enrollment_ids))
             print(f"The maximum EnrollmentID is: {max_enrollment_id}")
             
             # Enroll the next student from the waitlist
@@ -265,10 +277,11 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             # Remove the enrolled student from the waitlist in Redis
             r.zrem(waitlist_key, next_student)
 
-            members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+            members= r.zrange(waitlist_key, 1, 15, withscores=True)
+            print("members:",members)
             for member,score in members:
                 if score>1:
-                    r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
+                    r.zincrby(waitlist_key, -1, member)
 
             return {"Result": [
                 {"Student added to class": next_student},
@@ -521,6 +534,11 @@ def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(
             Statement=f"DELETE FROM Enrollments WHERE EnrollmentID = {enrollment_id}",
             ConsistentRead=True
         )
+    
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
+
+    # Delete the specific waitlist key
+    r.delete(waitlist_key)
 
     return {"Removed": f"Course {classid} Section {sectionid}"}
 
@@ -571,4 +589,3 @@ def change_prof(request: Request, classid: int, sectionnumber: int, newprofessor
             status_code=status.HTTP_409_CONFLICT,
             detail={"type": type(e).__name__, "msg": str(e)},
         )
-
