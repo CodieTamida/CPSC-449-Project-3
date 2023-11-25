@@ -539,34 +539,6 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
 
 ################# endpoint-10 #################
 
-#############SQLITE################
-# @app.post("/add/{classid}/{sectionid}/{professorid}/{enrollmax}/{waitmax}", status_code=status.HTTP_201_CREATED)
-# def add_class(request: Request, classid: str, sectionid: str, professorid: int, enrollmax: int, waitmax: int, db: sqlite3.Connection = Depends(get_db)):
-#     instructor_req = requests.get(f"http://localhost:5000/user/get/{professorid}", headers={"Authorization": request.headers.get("Authorization")})
-#     instructor_info = instructor_req.json()
-
-#     if instructor_req.status_code != 200:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail="Instructor does not exist",
-#         )
-#     check_user(instructor_info["userid"], instructor_info["username"], instructor_info["name"], instructor_info["email"], instructor_info["roles"], db)
-
-#     try:
-#         db.execute("INSERT INTO Classes (ClassID, SectionNumber, MaximumEnrollment, WaitlistMaximum) VALUES(?, ?, ?, ?)", (classid, sectionid, enrollmax, waitmax))
-#         db.execute("INSERT INTO InstructorClasses (InstructorID, ClassID, SectionNumber) VALUES(?, ?, ?)", (professorid, classid, sectionid))
-#         db.commit()
-#     except sqlite3.IntegrityError as e:
-#         raise HTTPException(
-#             status_code=status.HTTP_400_BAD_REQUEST,
-#             detail={
-#                 "ErrorType": type(e).__name__, 
-#                 "ErrorMessage": str(e)
-#             },
-#         )
-#     return {"New Class Added":f"Course {classid} Section {sectionid}"}
-
-#############DYNAMODB################
 @app.post("/add/{classid}/{sectionid}/{professorid}/{enrollmax}/{waitmax}", status_code=status.HTTP_201_CREATED)
 def add_class(class_data: ClassData, request: Request, classid: str, sectionid: str, professorid: int, enrollmax: int, waitmax: int):
     instructor_req = requests.get(f"http://localhost:{KRAKEND_PORT}/user/get/{professorid}", headers={"Authorization": request.headers.get("Authorization")})
