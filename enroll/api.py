@@ -263,10 +263,10 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             # Remove the enrolled student from the waitlist in Redis
             r.zrem(waitlist_key, next_student)
 
-            members=r.zrange(f"waitlist{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+            members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
             for member,score in members:
-                if score>removed_score:
-                    r.zincrby(f"waitlist{classid}:{sectionid}",-1,member)
+                if score>1:
+                    r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
 
             return {"Result": [
                 {"Student added to class": next_student},
