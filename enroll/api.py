@@ -206,7 +206,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
     # Try to Remove student from the class
     response = dynamodb_resource.execute_statement(
-        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}"
+        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}  AND SectionNumber={sectionid}"
     )
     try:
         if response.get('Items'):
