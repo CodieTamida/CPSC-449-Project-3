@@ -77,8 +77,10 @@ def list_all_classes():
         Statement="Select * FROM Classes",
         ConsistentRead=True
     )
+
     #return response['Items']
     return {"Items":response['Items']}
+
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
 def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
@@ -201,39 +203,88 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
 def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
     check_user(studentid, username, name, email, roles, db)
-    # Try to Remove student from the class
-    
-    dropped_student = db.execute("SELECT StudentID FROM Enrollments WHERE StudentID = ? AND ClassID = ? AND SectionNumber = ?",(studentid,classid,sectionid)).fetchone()
-    if not dropped_student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Student and class combination not found")
 
-    query = db.execute("UPDATE Enrollments SET EnrollmentStatus = 'DROPPED' WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
-    db.commit()
+    # Try to Remove student from the class
+    response = dynamodb_resource.execute_statement(
+        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}"
+    )
+    enrollment_id = response['Items'][0]['EnrollmentID']['N']
+    print(f'EnrollmentID: {enrollment_id}')
+
+    dropped_student = dynamodb_resource.execute_statement(
+        Statement = f"DELETE from Enrollments where EnrollmentID = {enrollment_id}"
+    )
+
+    if dropped_student:
+        print("Student dropped")
+
+    else:
+        print("student does not exist")
+
     # Add student to class if there are students in the waitlist for this class
-    next_on_waitlist = db.execute("SELECT * FROM Waitlists WHERE ClassID = ? ORDER BY Position ASC", (classid,)).fetchone()
-    if next_on_waitlist:
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
+    waitlist_count = r.zcard(waitlist_key)
+    print("count:", waitlist_count)
+
+    if waitlist_count > 0:
+        # Retrieve one student from the waitlist
+        next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
+        
+        if not next_on_waitlist:
+            return {"Result": [{"No students on the waitlist"}]}
+
+        next_student = int(next_on_waitlist[0][0])
+        print("Next student:", next_student)
+
         try:
-            db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber,EnrollmentStatus) \
-                            VALUES (?, ?, ?,'ENROLLED')", (next_on_waitlist['StudentID'], classid, sectionid))
-            db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (next_on_waitlist['StudentID'], classid))
-            db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
-            db.commit()
-        except sqlite3.IntegrityError as e:
+            # Determine the next enrollment ID
+            response = dynamodb_resource.execute_statement(
+                Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0 ORDER BY EnrollmentID DESC ;",
+                ConsistentRead=True
+            )
+            enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
+
+            # Find the maximum 'EnrollmentID'
+            max_enrollment_id = max(enrollment_ids, default=0) + 1
+
+            print("next_enrollment_id", sorted(enrollment_ids))
+            print(f"The maximum EnrollmentID is: {max_enrollment_id}")
+            
+            # Enroll the next student from the waitlist
+            dynamodb_resource.put_item(
+                TableName="Enrollments",
+                Item={
+                    "EnrollmentID": {"N": str(max_enrollment_id)},
+                    "StudentID": {"N": str(next_student)},
+                    "ClassID": {"N": str(classid)},
+                    "SectionNumber": {"N": str(sectionid)},
+                    "EnrollmentStatus": {"S": "ENROLLED"}
+                },
+            )
+
+            # Remove the enrolled student from the waitlist in Redis
+            r.zrem(waitlist_key, next_student)
+
+            members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+            for member,score in members:
+                if score>1:
+                    r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
+
+            return {"Result": [
+                {"Student added to class": next_student},
+                {"EnrollmentID": max_enrollment_id},
+            ]}
+        except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "ErrorType": type(e).__name__, 
+                    "ErrorType": type(e).__name__,
                     "ErrorMessage": str(e)
                 },
             )
-        
-        return {"Result": [
-            {"Student dropped from class": dropped_student}, 
-            {"Student added from waitlist": next_on_waitlist},
-        ]}
-    return {"Result": [{"Student dropped from class": dropped_student} ]}
+
+    return {"Result": [{"No students on the waitlist"}]}
+
 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
@@ -423,15 +474,55 @@ def add_class(request: Request, classid: str, sectionid: str, professorid: int, 
 
 @app.delete("/remove/{classid}/{sectionid}")
 def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(get_db)):
+    class_found = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}"
+    )
 
-    class_found = db.execute("SELECT * FROM Classes WHERE ClassID = ? AND SectionNumber = ?",(classid,sectionid)).fetchone()
     if not class_found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Class {classid} Section {sectionid} does not exist in database.")
-    db.execute("DELETE FROM Classes WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.execute("DELETE FROM InstructorClasses WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.execute("DELETE FROM Enrollments WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.commit()
-    return {"Removed" : f"Course {classid} Section {sectionid}"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Class {classid} Section {sectionid} does not exist in the database."
+        )
+
+    # Delete from Classes table
+    delete_statement1 = dynamodb_resource.execute_statement(
+        Statement=f"DELETE FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+
+    # Delete from InstructorClasses table
+    delete_statement2 = dynamodb_resource.execute_statement(
+        Statement=f"SELECT InstructorClassesID FROM InstructorClasses WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+    instructor_classes_id = delete_statement2['Items'][0]['InstructorClassesID']['N']
+    print(instructor_classes_id)
+
+    dropped_student = dynamodb_resource.execute_statement(
+        Statement = f"DELETE from InstructorClasses where InstructorClassesID = {instructor_classes_id}"
+    )
+
+    # Get EnrollmentIDs
+    enrolled = dynamodb_resource.execute_statement(
+        Statement=f"SELECT EnrollmentID FROM Enrollments WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+
+    response = dynamodb_resource.execute_statement(
+        Statement=f"SELECT EnrollmentID FROM Enrollments WHERE EnrollmentID >= 0 and ClassID = {classid} AND SectionNumber = {sectionid} ORDER BY EnrollmentID DESC ;",
+        ConsistentRead=True
+    )
+    enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
+    print("enrolled:",enrollment_ids)
+
+    # Delete from Enrollments table using EnrollmentIDs
+    for enrollment_id in enrollment_ids:
+        dynamodb_resource.execute_statement(
+            Statement=f"DELETE FROM Enrollments WHERE EnrollmentID = {enrollment_id}",
+            ConsistentRead=True
+        )
+
+    return {"Removed": f"Course {classid} Section {sectionid}"}
 
 @app.put("/freeze/{isfrozen}")
 def freeze_enrollment(isfrozen: int):
