@@ -262,6 +262,11 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             # Remove the enrolled student from the waitlist in Redis
             r.zrem(waitlist_key, next_student)
 
+            members=r.zrange(f"waitlist{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+            for member,score in members:
+                if score>removed_score:
+                    r.zincrby(f"waitlist{classid}:{sectionid}",-1,member)
+
             return {"Result": [
                 {"Student added to class": next_student},
                 {"EnrollmentID": max_enrollment_id},
@@ -447,15 +452,45 @@ def add_class(request: Request, classid: str, sectionid: str, professorid: int, 
 
 @app.delete("/remove/{classid}/{sectionid}")
 def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(get_db)):
+    class_found = dynamodb_resource.execute_statement(
+        Statement=f"SELECT * FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}"
+    )
 
-    class_found = db.execute("SELECT * FROM Classes WHERE ClassID = ? AND SectionNumber = ?",(classid,sectionid)).fetchone()
     if not class_found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Class {classid} Section {sectionid} does not exist in database.")
-    db.execute("DELETE FROM Classes WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.execute("DELETE FROM InstructorClasses WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.execute("DELETE FROM Enrollments WHERE ClassID =? AND SectionNumber =?", (classid, sectionid))
-    db.commit()
-    return {"Removed" : f"Course {classid} Section {sectionid}"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Class {classid} Section {sectionid} does not exist in the database."
+        )
+
+    # Delete from Classes table
+    delete_statement = dynamodb_resource.execute_statement(
+        Statement=f"DELETE FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+
+    # Delete from InstructorClasses table
+    delete_statement = dynamodb_resource.execute_statement(
+        Statement=f"DELETE FROM InstructorClasses WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+
+    # Get EnrollmentIDs
+    enrolled = dynamodb_resource.execute_statement(
+        Statement=f"SELECT EnrollmentID FROM Enrollments WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+        ConsistentRead=True
+    )
+
+    # Extract EnrollmentIDs from the result
+    enrollment_ids = [item['EnrollmentID'] for item in enrolled]
+
+    # Delete from Enrollments table using EnrollmentIDs
+    for enrollment_id in enrollment_ids:
+        dynamodb_resource.execute_statement(
+            Statement=f"DELETE FROM Enrollments WHERE EnrollmentID = {enrollment_id}",
+            ConsistentRead=True
+        )
+
+    return {"Removed": f"Course {classid} Section {sectionid}"}
 
 @app.put("/freeze/{isfrozen}", status_code=status.HTTP_204_NO_CONTENT)
 def freeze_enrollment(isfrozen: str, db: sqlite3.Connection = Depends(get_db)):
