@@ -313,20 +313,7 @@ def view_enrolled(instructorid: int, classid: int, sectionid: int, name: str, us
     
 @app.get("/dropped/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def view_dropped_students(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
-    '''roles = [word.strip() for word in roles.split(",")]
-    check_user(instructorid, username, name, email, roles, db)
-    instructor_class = db.execute("SELECT * FROM InstructorClasses WHERE classID=? AND SectionNumber=?",(classid,sectionid)).fetchone()
-    if not instructor_class:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
-        )
     
-    query = "SELECT StudentID FROM Enrollments WHERE ClassID = ? AND SectionNumber = ? AND EnrollmentStatus = 'DROPPED'"
-    dropped_students = db.execute(query, (classid, sectionid)).fetchall()
-    if not dropped_students:
-        raise HTTPException(status_code=404, detail="No dropped students found for this class.")
-    return {"Dropped Students ID": [student["StudentID"] for student in dropped_students]}'''
-
     instructor_class = dynamodb_resource.execute_statement(
         Statement=f"Select * FROM InstructorClasses WHERE ClassID={classid} AND SectionNumber={sectionid}",
         ConsistentRead=True
