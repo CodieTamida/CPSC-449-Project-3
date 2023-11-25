@@ -242,7 +242,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
     if waitlist_count > 0:
         # Retrieve one student from the waitlist
-        next_on_waitlist = r.zrange(waitlist_key, 1, 1, withscores=True)
+        next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
         
         if not next_on_waitlist:
             return {"Result": [{"No students on the waitlist"}]}
@@ -277,7 +277,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             # Remove the enrolled student from the waitlist in Redis
             r.zrem(waitlist_key, next_student)
 
-            members= r.zrange(waitlist_key, 1, 15, withscores=True)
+            members= r.zrange(waitlist_key, 0, 14, withscores=True)
             print("members:",members)
             for member,score in members:
                 if score>1:
