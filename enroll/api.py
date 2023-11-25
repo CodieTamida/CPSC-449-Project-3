@@ -224,17 +224,17 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
     print("count:", waitlist_count)
 
     if waitlist_count > 0:
-    # Retrieve all items from the waitlist
-        next_on_waitlist = r.zrange(waitlist_key, 0, 14, withscores=True)
-        print("Waitlist:", next_on_waitlist)
-        next_students = [int(student[0]) for student in next_on_waitlist]
-        print("Next students:", next_students)
+        # Retrieve one student from the waitlist
+        next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
+        
+        if not next_on_waitlist:
+            return {"Result": [{"No students on the waitlist"}]}
+
+        next_student = int(next_on_waitlist[0][0])
+        print("Next student:", next_student)
 
         try:
-            # Determine the number of students to enroll from the waitlist
-            students_to_enroll = min(30 - waitlist_count, len(next_students))
-            print(students_to_enroll)
-
+            # Determine the next enrollment ID
             response = dynamodb_resource.execute_statement(
                 Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0 ORDER BY EnrollmentID DESC ;",
                 ConsistentRead=True
@@ -246,37 +246,25 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
             print("next_enrollment_id", sorted(enrollment_ids))
             print(f"The maximum EnrollmentID is: {max_enrollment_id}")
+            
+            # Enroll the next student from the waitlist
+            dynamodb_resource.put_item(
+                TableName="Enrollments",
+                Item={
+                    "EnrollmentID": {"N": str(max_enrollment_id)},
+                    "StudentID": {"N": str(next_student)},
+                    "ClassID": {"N": str(classid)},
+                    "SectionNumber": {"N": str(sectionid)},
+                    "EnrollmentStatus": {"S": "ENROLLED"}
+                },
+            )
 
-            # If there are existing items, increment the ID, otherwise, start from 1
-            next_enrollment_id = int(response['Items'][0]['EnrollmentID']['N']) + 1
-
-            # Enroll students from the waitlist
-            for i in range(students_to_enroll):
-                next_student_id = next_students[i]
-
-                # Insert the new item with the auto-incremented EnrollmentID
-                dynamodb_resource.put_item(
-                    TableName="Enrollments",
-                    Item={
-                        "EnrollmentID": {"N": str(max_enrollment_id)},
-                        "StudentID": {"N": str(next_student_id)},
-                        "ClassID": {"N": str(classid)},
-                        "SectionNumber": {"N": str(sectionid)},
-                        "EnrollmentStatus" : {"S" : str("ENROLLED")}
-                    },
-                    ConditionExpression="attribute_not_exists(EnrollmentID)",  
-                )
-
-                # Remove the enrolled student from the waitlist in Redis
-                r.zrem(waitlist_key, next_student_id)
-
-                # Increment the next enrollment ID for the next iteration
-                max_enrollment_id += 1
+            # Remove the enrolled student from the waitlist in Redis
+            r.zrem(waitlist_key, next_student)
 
             return {"Result": [
-                {"Student dropped from class": dropped_student['Items']},
-                {"Student added to class": next_students},
-                {"Students added from waitlist": students_to_enroll},
+                {"Student added to class": next_student},
+                {"EnrollmentID": max_enrollment_id},
             ]}
         except Exception as e:
             raise HTTPException(
@@ -287,7 +275,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
                 },
             )
 
-    return {"Result": [{"Student dropped from class": dropped_student['Items']}]}
+    return {"Result": [{"No students on the waitlist"}]}
 
 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
