@@ -77,7 +77,8 @@ def list_all_classes():
         Statement="Select * FROM Classes",
         ConsistentRead=True
     )
-    return response['Items']
+    #return response['Items']
+    return {"Items":response['Items']}
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
 def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
