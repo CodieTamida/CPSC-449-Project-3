@@ -78,6 +78,7 @@ def list_all_classes():
         ConsistentRead=True
     )
     return response['Items']
+
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
 def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
     roles = [word.strip() for word in roles.split(",")]
@@ -262,10 +263,10 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             # Remove the enrolled student from the waitlist in Redis
             r.zrem(waitlist_key, next_student)
 
-            members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
+            members=r.zrange(f"waitlist{classid}:{sectionid}",0,-1, withscores=True) #REDIS
             for member,score in members:
-                if score>1:
-                    r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
+                if score>removed_score:
+                    r.zincrby(f"waitlist{classid}:{sectionid}",-1,member)
 
             return {"Result": [
                 {"Student added to class": next_student},
@@ -463,15 +464,21 @@ def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(
         )
 
     # Delete from Classes table
-    delete_statement = dynamodb_resource.execute_statement(
+    delete_statement1 = dynamodb_resource.execute_statement(
         Statement=f"DELETE FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
         ConsistentRead=True
     )
 
     # Delete from InstructorClasses table
-    delete_statement = dynamodb_resource.execute_statement(
-        Statement=f"DELETE FROM InstructorClasses WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
+    delete_statement2 = dynamodb_resource.execute_statement(
+        Statement=f"SELECT InstructorClassesID FROM InstructorClasses WHERE ClassID = {classid} AND SectionNumber = {sectionid}",
         ConsistentRead=True
+    )
+    instructor_classes_id = delete_statement2['Items'][0]['InstructorClassesID']['N']
+    print(instructor_classes_id)
+
+    dropped_student = dynamodb_resource.execute_statement(
+        Statement = f"DELETE from InstructorClasses where InstructorClassesID = {instructor_classes_id}"
     )
 
     # Get EnrollmentIDs
@@ -480,8 +487,12 @@ def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(
         ConsistentRead=True
     )
 
-    # Extract EnrollmentIDs from the result
-    enrollment_ids = [item['EnrollmentID'] for item in enrolled]
+    response = dynamodb_resource.execute_statement(
+        Statement=f"SELECT EnrollmentID FROM Enrollments WHERE EnrollmentID >= 0 and ClassID = {classid} AND SectionNumber = {sectionid} ORDER BY EnrollmentID DESC ;",
+        ConsistentRead=True
+    )
+    enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
+    print("enrolled:",enrollment_ids)
 
     # Delete from Enrollments table using EnrollmentIDs
     for enrollment_id in enrollment_ids:
