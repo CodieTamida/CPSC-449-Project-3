@@ -202,15 +202,21 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
     check_user(studentid, username, name, email, roles, db)
 
     # Try to Remove student from the class
-    dropped_student = dynamodb_resource.execute_statement(
-        Statement=f"SELECT StudentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}",
-        ConsistentRead=True
+    response = dynamodb_resource.execute_statement(
+        Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}"
     )
-    if not dropped_student['Items']:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student and class combination not found"
-        )
+    enrollment_id = response['Items'][0]['EnrollmentID']['N']
+    print(f'EnrollmentID: {enrollment_id}')
+
+    dropped_student = dynamodb_resource.execute_statement(
+        Statement = f"DELETE from Enrollments where EnrollmentID = {enrollment_id}"
+    )
+
+    if dropped_student:
+        print("Student dropped")
+
+    else:
+        print("student does not exist")
 
     # Add student to class if there are students in the waitlist for this class
     waitlist_key = f"waitlist:{classid}:{sectionid}"
@@ -218,7 +224,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
     print("count:", waitlist_count)
 
     if waitlist_count > 0:
-        # Retrieve all items from the waitlist
+    # Retrieve all items from the waitlist
         next_on_waitlist = r.zrange(waitlist_key, 0, 14, withscores=True)
         print("Waitlist:", next_on_waitlist)
         next_students = [int(student[0]) for student in next_on_waitlist]
@@ -227,9 +233,10 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
         try:
             # Determine the number of students to enroll from the waitlist
             students_to_enroll = min(30 - waitlist_count, len(next_students))
+            print(students_to_enroll)
 
             response = dynamodb_resource.execute_statement(
-                Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0  ORDER BY EnrollmentID DESC ;",
+                Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0 ORDER BY EnrollmentID DESC ;",
                 ConsistentRead=True
             )
             enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
@@ -254,10 +261,14 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
                         "EnrollmentID": {"N": str(max_enrollment_id)},
                         "StudentID": {"N": str(next_student_id)},
                         "ClassID": {"N": str(classid)},
+                        "SectionNumber": {"N": str(sectionid)},
+                        "EnrollmentStatus" : {"S" : str("ENROLLED")}
                     },
                     ConditionExpression="attribute_not_exists(EnrollmentID)",  
                 )
-                r.zpopmin(waitlist_key)
+
+                # Remove the enrolled student from the waitlist in Redis
+                r.zrem(waitlist_key, next_student_id)
 
                 # Increment the next enrollment ID for the next iteration
                 max_enrollment_id += 1
@@ -277,6 +288,7 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             )
 
     return {"Result": [{"Student dropped from class": dropped_student['Items']}]}
+
 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
