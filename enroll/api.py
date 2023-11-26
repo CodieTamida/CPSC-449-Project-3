@@ -1,11 +1,8 @@
 import sqlite3
 import contextlib
 import requests
-
-#from datatime import datetime
 import logging
 import boto3
-#from botocore.exception import ClientError
 from pprint import pprint
 from .var import dynamodb_dummy_data
 from pydantic import BaseModel 
@@ -16,26 +13,15 @@ r=redis.Redis(host='localhost',port=6379,db=0)
 
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
-from pydantic_settings import BaseSettings
+#from pydantic_settings import BaseSettings
 WAITLIST_MAXIMUM = 15
 MAXIMUM_WAITLISTED_CLASSES = 3
 KRAKEND_PORT = "5600"
-
-class Settings(BaseSettings, env_file="enroll/.env", extra="ignore"):
-    database: str
-    logging_config: str
 
 class ClassData(BaseModel):
     coursecode: str
     classname: str
 
-
-def get_db():
-    with contextlib.closing(sqlite3.connect(settings.database)) as db:
-        db.row_factory = sqlite3.Row
-        yield db
-
-settings = Settings()
 app = FastAPI()
 
 dynamodb_resource = boto3.client('dynamodb',
@@ -44,56 +30,11 @@ dynamodb_resource = boto3.client('dynamodb',
                                  endpoint_url ="http://localhost:5700",
                                  region_name='us-west-2')
 
-def check_id_exists_in_table(id_name: str,id_val: int, table_name: str, db: sqlite3.Connection = Depends(get_db)) -> bool:
-    """return true if value found, false if not found"""
-    vals = db.execute(f"SELECT * FROM {table_name} WHERE {id_name} = ?",(id_val,)).fetchone()
-    if vals:
-        return True
-    else:
-        return False
-
-
-#####DynamoDB check_user function
-def check_user(id_val: int, username: str, name: str, email: str, roles: list):
-    # Check if user exists in Users table in DynamoDB
-    response = dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Users WHERE UserId={id_val}",
-        ConsistentRead=True
-    )
-    if not response['Items']:
-        # Insert user into Users table
-        dynamodb_resource.execute_statement(
-            Statement=f"INSERT INTO Users VALUE {{'UserId':{id_val},'Username':{username},'FullName':{name},'Email':{email}}}",
-            ConsistentRead=True
-
-        )
-        # Check roles and insert into appropriate table
-        if "Student" in roles:
-            dynamodb_resource.execute_statement(
-                Statement=f"INSERT INTO Students VALUE {{'StudentId':{id_val}}}",
-                ConsistentRead=True
-            )
-
-        if "Instructor" in roles:
-            dynamodb_resource.execute_statement(
-                Statement=f"INSERT INTO Instructors VALUE {{'InstructorId':{id_val}}}",
-                ConsistentRead=True
-            )
-        
 
 ### Student related endpoints
 
 @app.get("/list")
-# def list_open_classes(db: sqlite3.Connection = Depends(get_db)):
-#     if (db.execute("SELECT IsFrozen FROM Freeze").fetchone()[0] == 1):
-#         return {"Classes": []}
-    
-#     classes = db.execute(
-#         "SELECT * FROM Classes WHERE \
-#             Classes.MaximumEnrollment > (SELECT COUNT(EnrollmentID) FROM Enrollments WHERE Enrollments.ClassID = Classes.ClassID) \
-#             OR Classes.WaitlistMaximum > (SELECT COUNT(WaitlistID) FROM Waitlists WHERE Waitlists.ClassID = Classes.ClassID)"
-#     )
-#     return {"Classes": classes.fetchall()}
+
 def list_all_classes():
     response=dynamodb_resource.execute_statement(
         Statement="Select * FROM Classes",
@@ -104,15 +45,15 @@ def list_all_classes():
     return {"Items":response['Items']}
 
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
-def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles, db)
+def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):    
+
+    check_if_frozen = dynamodb_resource.execute_statement(
+        Statement=f"Select IsFrozen FROM Freeze",
+        ConsistentRead=True
+    )   
+    if check_if_frozen['Items'][0]['IsFrozen']['N'] =='1':
+        return {"message": f"Enrollments frozen"}
     
-    # classes = db.execute("SELECT * FROM Classes WHERE ClassID = ?", (classid,)).fetchone()
-    # if not classes:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_404_NOT_FOUND,
-    #         detail="Class not found")
     classes=dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Classes WHERE ClassID={classid} AND SectionNumber={sectionid}",
         ConsistentRead=True
@@ -157,7 +98,6 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     class_section = int(class_section['N'])
     print(class_section)
     print(sectionid)
-    # count = db.execute("SELECT COUNT() FROM Enrollments WHERE ClassID = ?", (classid,)).fetchone()[0]
     count = dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Enrollments WHERE ClassID={classid} and SectionID={sectionid}",
         ConsistentRead=True
@@ -166,16 +106,9 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     count=int(output['MaximumEnrollment']['N'])
     print("This is the count for max en " +str(count))
     max_waitlist= int(output['WaitlistMaximum']['N'])
-    # waitlist_count = db.execute("SELECT COUNT() FROM Waitlists WHERE ClassID = ?", (classid,)).fetchone()[0]
     waitlist_count = r.zcard(f"waitlist{classid}:{sectionid}") #REDIS
     print("This is the count for max en " +str(count))
-    # if count < classesnt for ["MaximumEnrollment"]:
-    #     db.execute("INSERT INTO Enrollments(StudentID, ClassID, SectionNumber) VALUES(?,?,?)",(studentid, classid, class_section))
-    #     db.commit()
-    #     return {"message": f"Enrolled student {studentid} in section {class_section} of class {classid}."}
-    # print(classes)
-    # classes =int(classes["MaximumEnrollment"]['N'])
-    # print(classes)
+
     enrollment_id=dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Enrollments",
         ConsistentRead=True
@@ -183,11 +116,6 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     enrollment_id=len(enrollment_id['Items'])
     print(enrollment_id)
     enrollment_id+=1
-    # enrollment_id = 15
-    # user_metadata = dynamodb_resource.execute_statement(
-    #     TableName='Enrollments',
-    #     Key={'EnrollmentID':{'N':str(enrollment_id)}},
-    # )
 
     if enroll_count < count:
         
@@ -201,19 +129,16 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
         return {"message": f"Enrolled student {studentid} in section {class_section} of class {classid}."}
         
     elif waitlist_count < max_waitlist:
-        # waitlisted = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
         waitlisted = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
         if waitlisted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Student already waitlisted")
 
-        # max_waitlist_position = db.execute("SELECT MAX(Position) FROM Waitlists WHERE ClassID = ? AND  SectionNumber = ?",(classid,sectionid)).fetchone()[0]
         max_waitlist_position = r.zcard(f"waitlist:{classid}:{sectionid}") #REDIS
         print("Position: " + str(max_waitlist_position))
         if not max_waitlist_position: max_waitlist_position = 0
-        # db.execute("INSERT INTO Waitlists(StudentID, ClassID, SectionNumber, Position) VALUES(?,?,?,?)",(studentid, classid, class_section, max_waitlist_position + 1))
-        # db.commit()
+
         max_waitlist_position+=1
 
         r.zadd(f"waitlist:{classid}:{sectionid}",{studentid:max_waitlist_position})
@@ -222,10 +147,8 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
         return {"message": f"Unable to enroll in waitlist for the class, reached the maximum number of students"}
 
 @app.delete("/enrollmentdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles, db)
-
+def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
+    
     # Try to Remove student from the class
     response = dynamodb_resource.execute_statement(
         Statement=f"Select EnrollmentID FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid}  AND SectionNumber={sectionid}"
@@ -240,6 +163,17 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
                 # Attempt to drop the student
                 dropped_student = dynamodb_resource.execute_statement(
                     Statement=f"DELETE FROM Enrollments WHERE EnrollmentID = {enrollment_id}"
+                )
+
+                dynamodb_resource.put_item(
+                    TableName="Enrollments",
+                    Item={
+                        "EnrollmentID": {"N": str(enrollment_id)},
+                        "StudentID": {"N": str(studentid)},
+                        "ClassID": {"N": str(classid)},
+                        "SectionNumber": {"N": str(sectionid)},
+                        "EnrollmentStatus": {"S": "DROPPED"}
+                    },
                 )
 
                 if dropped_student:
@@ -260,9 +194,15 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
     # Add student to class if there are students in the waitlist for this class
     waitlist_key = f"waitlist:{classid}:{sectionid}"
     waitlist_count = r.zcard(waitlist_key)
-    print("People in waitlist:", waitlist_count)
-
-    if waitlist_count > 0:
+    check_if_frozen = dynamodb_resource.execute_statement(
+        Statement=f"Select IsFrozen FROM Freeze",
+        ConsistentRead=True
+    )   
+    if check_if_frozen['Items'][0]['IsFrozen']['N'] =='1':
+        return {"message": f"Enrollments frozen hence not moving any items from waitlist, required student has been dropped"}
+    elif waitlist_count > 0:
+        
+        print("People in waitlist:", waitlist_count)
         # Retrieve one student from the waitlist
         next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
         
@@ -317,19 +257,12 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
                     "ErrorMessage": str(e)
                 },
             )
-
     return {"Result": [{"No students on the waitlist"}]}
-
+    
 
 @app.delete("/waitlistdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    user = db.execute("SELECT * FROM Users WHERE UserId = ?", (studentid,)).fetchone()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str):
+    
     exists=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     if not exists:
         raise HTTPException(
@@ -337,27 +270,18 @@ def remove_student_from_waitlist(studentid: int, classid: int,sectionid:int, nam
             detail="Student not found in waitlist",
         )
     
-    # exists = db.execute("SELECT * FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid)).fetchone()
-    # if not exists:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_400_BAD_REQUEST,
-    #         detail={"Error": "No such student found in the given class on the waitlist"}
-    #     )
-    # db.execute("DELETE FROM Waitlists WHERE StudentID = ? AND ClassID = ?", (studentid, classid))
     removed_score=r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     r.zrem(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     members=r.zrange(f"waitlist:{classid}:{sectionid}",0,-1, withscores=True) #REDIS
     for member,score in members:
         if score>removed_score:
             r.zincrby(f"waitlist:{classid}:{sectionid}",-1,member)
-    # db.execute("UPDATE Classes SET WaitlistCount = WaitlistCount - 1 WHERE ClassID = ?", (classid,))
-    # db.commit()
+
     return {"Element removed": exists}
     
 @app.get("/waitlist/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
-def view_waitlist_position(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str, db: sqlite3.Connection = Depends(get_db)):
-    roles = [word.strip() for word in roles.split(",")]
-    check_user(studentid, username, name, email, roles)
+def view_waitlist_position(studentid: int, classid: int,sectionid:int, name: str, username: str, email: str, roles: str):
+    
     position = None
     position = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
     
@@ -421,8 +345,6 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
         raise HTTPException(
             status_code=status.HTTP_204_NO_CONTENT
         )  
-
-################# endpoint-8 #################
 
 #Test add to Redis waitlist
 @app.post("/test/waitlist/{classid}/{sectionid}/{studentid}")
@@ -495,9 +417,6 @@ def drop_student_administratively(instructorid: int, classid: int, sectionid: in
     
     return {"message": f"Student {studentid} has been administratively dropped from class {classid}, section {sectionid}. There are no students in the waitlist for this class section."}
 
-################# End of endpoint-8 #################
-
-################# endpoint-9 #################
 
 @app.get("/waitlist/instructor/{instructorid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
@@ -514,7 +433,7 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
     
     
     # Check if there are students in the waitlist/if waitlist exists
-    waitlist_key = f"waitlist{classid}:{sectionid}"
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
     if not r.exists(waitlist_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class"
@@ -533,11 +452,7 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
 
     return {"Waitlist": waitlist}
 
-################# End of endpoint-9 #################
-
 ### Registrar related endpoints
-
-################# endpoint-10 #################
 
 @app.post("/add/{classid}/{sectionid}/{professorid}/{enrollmax}/{waitmax}", status_code=status.HTTP_201_CREATED)
 def add_class(class_data: ClassData, request: Request, classid: str, sectionid: str, professorid: int, enrollmax: int, waitmax: int):
@@ -624,10 +539,9 @@ def add_class(class_data: ClassData, request: Request, classid: str, sectionid: 
         )
     return {"New Class Added":f"Course ID:{classid} Section-{sectionid}: {class_name} ({course_code})"}
 
-################# End of endpoint-10 #################
 
 @app.delete("/remove/{classid}/{sectionid}")
-def remove_class(classid: str, sectionid: str, db: sqlite3.Connection = Depends(get_db)):
+def remove_class(classid: str, sectionid: str):
     class_found = dynamodb_resource.execute_statement(
         Statement=f"SELECT * FROM Classes WHERE ClassID = {classid} AND SectionNumber = {sectionid}"
     )
@@ -696,7 +610,7 @@ def freeze_enrollment(isfrozen: int):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="isfrozen must be 0 or 1.")
 
 @app.put("/change/{classid}/{sectionnumber}/{newprofessorid}", status_code=status.HTTP_204_NO_CONTENT)
-def change_prof(request: Request, classid: int, sectionnumber: int, newprofessorid: int, db: sqlite3.Connection = Depends(get_db)):
+def change_prof(request: Request, classid: int, sectionnumber: int, newprofessorid: int):
     instructor_req = requests.get(f"http://localhost:{KRAKEND_PORT}/user/get/{newprofessorid}", headers={"Authorization": request.headers.get("Authorization")})
     instructor_info = instructor_req.json()
 
@@ -705,15 +619,6 @@ def change_prof(request: Request, classid: int, sectionnumber: int, newprofessor
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Instructor does not exist",
         )
-
-    # These functions might need to get updated since the use sqlite.
-    # check_user(instructor_info["userid"], instructor_info["username"], instructor_info["name"], instructor_info["email"], instructor_info["roles"], db)
-    # valid_class_id = check_id_exists_in_table("ClassID",classid,"Classes",db)
-    # if not valid_class_id:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_404_NOT_FOUND,
-    #         detail="Class does not exist",
-    #     )
     
     try:
         response=dynamodb_resource.execute_statement(
