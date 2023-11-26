@@ -508,7 +508,7 @@ def view_waitlist(instructorid: int, classid: int, sectionid: int, name: str, us
     
     
     # Check if there are students in the waitlist/if waitlist exists
-    waitlist_key = f"waitlist{classid}:{sectionid}"
+    waitlist_key = f"waitlist:{classid}:{sectionid}"
     if not r.exists(waitlist_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No students found in the waitlist for this class"
