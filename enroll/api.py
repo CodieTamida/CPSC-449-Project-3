@@ -1,10 +1,5 @@
-import sqlite3
-import contextlib
 import requests
-import logging
 import boto3
-from pprint import pprint
-from .var import dynamodb_dummy_data
 from pydantic import BaseModel 
 
 import redis
@@ -12,7 +7,7 @@ r=redis.Redis(host='localhost',port=6379,db=0)
 
 
 
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, HTTPException, status, Request
 #from pydantic_settings import BaseSettings
 WAITLIST_MAXIMUM = 15
 MAXIMUM_WAITLISTED_CLASSES = 3
@@ -41,7 +36,6 @@ def list_all_classes():
         ConsistentRead=True
     )
 
-    #return response['Items']
     return {"Items":response['Items']}
 
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
@@ -59,7 +53,6 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
         ConsistentRead=True
     )   
     output=classes['Items'][0]
-    print(output)
     if not classes:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -74,9 +67,7 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
         ConsistentRead=True
     )
     enroll_count=len(enroll_count['Items'])
-    print("This is enroll_count" + str(enroll_count))
     if enrolled['Items']:
-        print("This is enrolled_output" + str(enrolled['Items']))
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -84,7 +75,6 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     enrolled_output=enrolled['Items']
 
     if not enrolled_output:
-        print('is this executing???')
         enrollments = 0
     else:
         enrollments+=1
@@ -96,25 +86,20 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
     
     class_section = classes["Items"][0]["SectionNumber"]
     class_section = int(class_section['N'])
-    print(class_section)
-    print(sectionid)
     count = dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Enrollments WHERE ClassID={classid} and SectionID={sectionid}",
         ConsistentRead=True
     )
 
     count=int(output['MaximumEnrollment']['N'])
-    print("This is the count for max en " +str(count))
     max_waitlist= int(output['WaitlistMaximum']['N'])
     waitlist_count = r.zcard(f"waitlist{classid}:{sectionid}") #REDIS
-    print("This is the count for max en " +str(count))
 
     enrollment_id=dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Enrollments",
         ConsistentRead=True
     )
     enrollment_id=len(enrollment_id['Items'])
-    print(enrollment_id)
     enrollment_id+=1
 
     if enroll_count < count:
@@ -122,9 +107,7 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
         dynamodb_resource.execute_statement(
             Statement=f"INSERT INTO Enrollments VALUE {{'EnrollmentID':{enrollment_id},'StudentID':{studentid},'SectionNumber':{sectionid},'ClassID':{classid},'EnrollmentStatus':'ENROLLED'}}",
         )
-        print("Enroll insert")
         enrollments+=1
-        print("This is Enrollments" + str(enrollments))
         enrollment_id+=1
         return {"message": f"Enrolled student {studentid} in section {class_section} of class {classid}."}
         
@@ -136,7 +119,6 @@ def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: 
                 detail="Student already waitlisted")
 
         max_waitlist_position = r.zcard(f"waitlist:{classid}:{sectionid}") #REDIS
-        print("Position: " + str(max_waitlist_position))
         if not max_waitlist_position: max_waitlist_position = 0
 
         max_waitlist_position+=1
@@ -158,7 +140,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             enrollment_id = response['Items'][0].get('EnrollmentID', {}).get('N')
 
             if enrollment_id is not None:
-                print(f'EnrollmentID: {enrollment_id}')
 
                 # Attempt to drop the student
                 dropped_student = dynamodb_resource.execute_statement(
@@ -202,7 +183,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
         return {"message": f"Enrollments frozen hence not moving any items from waitlist, required student has been dropped"}
     elif waitlist_count > 0:
         
-        print("People in waitlist:", waitlist_count)
         # Retrieve one student from the waitlist
         next_on_waitlist = r.zrange(waitlist_key, 0, 0, withscores=True)
         
@@ -210,7 +190,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             return {"Result": [{"No students on the waitlist"}]}
 
         next_student = int(next_on_waitlist[0][0])
-        print("Next student:", next_student)
 
         try:
             # Determine the next enrollment ID
@@ -222,7 +201,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
 
             # Find the maximum 'EnrollmentID'
             max_enrollment_id = max(enrollment_ids, default=0) + 1
-            print(f"The maximum EnrollmentID is: {max_enrollment_id}")
             
             # Enroll the next student from the waitlist
             dynamodb_resource.put_item(
@@ -240,7 +218,6 @@ def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: 
             r.zrem(waitlist_key, next_student)
 
             members= r.zrange(waitlist_key, 0, 14, withscores=True)
-            print("members:",members)
             for member,score in members:
                 if score>1:
                     r.zincrby(waitlist_key, -1, member)
@@ -332,12 +309,10 @@ def view_dropped_students(instructorid: int, classid: int, sectionid: int, name:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instructor does not have this class"
         )
-    print(instructor_class)
     dropped_students = dynamodb_resource.execute_statement(
         Statement=f"Select * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid} AND EnrollmentStatus='DROPPED'",
         ConsistentRead=True
     )
-    print(dropped_students)
     if dropped_students:
         student_ids = [student['StudentID']['N'] for student in dropped_students['Items']]
         return {"Following Student ids dropped in instructor's class" : student_ids}
@@ -564,7 +539,6 @@ def remove_class(classid: str, sectionid: str):
         ConsistentRead=True
     )
     instructor_classes_id = delete_statement2['Items'][0]['InstructorClassesID']['N']
-    print(instructor_classes_id)
 
     dropped_student = dynamodb_resource.execute_statement(
         Statement = f"DELETE from InstructorClasses where InstructorClassesID = {instructor_classes_id}"
@@ -581,7 +555,6 @@ def remove_class(classid: str, sectionid: str):
         ConsistentRead=True
     )
     enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
-    print("enrolled:",enrollment_ids)
 
     # Delete from Enrollments table using EnrollmentIDs
     for enrollment_id in enrollment_ids:
@@ -609,10 +582,9 @@ def freeze_enrollment(isfrozen: int):
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="isfrozen must be 0 or 1.")
 
-@app.put("/change/{classid}/{sectionnumber}/{newprofessorid}", status_code=status.HTTP_204_NO_CONTENT)
+@app.put("/change/{classid}/{sectionnumber}/{newprofessorid}")
 def change_prof(request: Request, classid: int, sectionnumber: int, newprofessorid: int):
     instructor_req = requests.get(f"http://localhost:{KRAKEND_PORT}/user/get/{newprofessorid}", headers={"Authorization": request.headers.get("Authorization")})
-    instructor_info = instructor_req.json()
 
     if instructor_req.status_code != 200:
         raise HTTPException(
@@ -625,10 +597,11 @@ def change_prof(request: Request, classid: int, sectionnumber: int, newprofessor
             Statement=f"Select * FROM InstructorClasses WHERE ClassID={classid} AND SectionNumber={sectionnumber}")
         
         instructor_classes_id = response['Items'][0]['InstructorClassesID']['N']
-        print(instructor_classes_id)
 
         dynamodb_resource.execute_statement(
             Statement=f"Update InstructorClasses SET InstructorID={newprofessorid} WHERE InstructorClassesID={instructor_classes_id}")
+
+        return {"Updated": f"Changed instructor for ClassID={classid}, SectionNumber={sectionnumber} to InstructorID={newprofessorid}"}
 
     except Exception as e:
         raise HTTPException(
