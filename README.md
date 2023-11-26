@@ -1,5 +1,6 @@
 # CPSC 449 Project 3
 * [Project Document](https://docs.google.com/document/d/1szW1jXacdYrjgVPZvZnSmS9IESH4BIxatiCl_-Np4Go/edit)
+
 We have forked a team member’s Project 2 as a baseline, which was then modified to meet the requirements mentioned in the prompt for Project 3.
 
 ## How to run the services and initialize their databases
