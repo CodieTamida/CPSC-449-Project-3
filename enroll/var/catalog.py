@@ -1,8 +1,5 @@
 import boto3
-from botocore.exceptions import ClientError
 import logging
-from datetime import datetime
-from decimal import Decimal
 
 from dynamodb_dummy_data import DynamodbData
 # Create a DynamoDB resource
@@ -67,9 +64,7 @@ class Dynamodbmodel:
             }
         )
         users_table.wait_until_exists()
-        
-        # users_table.put_item(Item={'UserId': 100,'Username':"ornella","Fullname":"Ornella Dsouza","Email":"o@gmail.com"})
-        
+                
         # Create Classes table
         classes_table = self.dynamodb_resource.create_table(
             TableName='Classes',
@@ -109,7 +104,6 @@ class Dynamodbmodel:
             TableName='Enrollments',
             KeySchema=[
                 {'AttributeName': 'EnrollmentID', 'KeyType': 'HASH'}
-                # {'AttributeName': 'StudentID', 'KeyType': 'RANGE'} # ADDED
             ],
             AttributeDefinitions=[
                 {'AttributeName': 'EnrollmentID', 'AttributeType': 'N'},

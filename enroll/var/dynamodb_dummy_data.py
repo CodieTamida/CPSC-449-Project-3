@@ -1,8 +1,5 @@
-#import imp
-import boto3
 from botocore.exceptions import ClientError
 import logging
-from datetime import datetime
 from decimal import Decimal
 import json
 from pprint import pprint
@@ -74,7 +71,6 @@ class DynamodbData:
         print(params)
         output = self.run_partiql(statements, params)
         for item in output["Responses"]:
-            #print(f"\n{item['Item']['title']}, {item['Item']['year']}")
             pprint(item["Item"])
         print("-" * 88)
 
