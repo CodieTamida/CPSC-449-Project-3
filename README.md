@@ -1,23 +1,15 @@
-# CPSC 449 Project 2
-* [Project Document](https://docs.google.com/document/d/1Dua9mpu3WIoa9oAZroRN0IWxMeS5wWCzW0SCJ0cQGHY/edit?usp=sharing)
+# CPSC 449 Project 3
+* [Project Document](https://docs.google.com/document/d/1szW1jXacdYrjgVPZvZnSmS9IESH4BIxatiCl_-Np4Go/edit)
+We have forked a team member’s Project 2 as a baseline, which was then modified to meet the requirements mentioned in the prompt for Project 3.
 
-## Updating the Databases
-1. Write the SQL. For the enroll service, write it in `enroll/var/catalog.sql`. For the user service, write it in `users/var/users.sql`.
-2. Go into the directory that the sql file is in:  
-   For enroll:
+## How to run the services and initialize their databases
+1. To run the services, open a terminal in with the project's root as the current directory and run:
    ```bash
-   cd enroll/var
+   foreman start
    ```
-   For users:
+2. In a new terminal, initialize the databases with these commands:
    ```bash
-   cd users/var
+   ./users/var/updateDB.sh
+   cd enroll/var/ && python3 catalog.py
    ```
-3. Run `updateDB.sh` for users service:
-   ```bash
-   ./updateDB.sh
-   ```
-   Run `catalog.py` for enroll service:
-   ```bash
-   python3 catalog.py  //Ensure dynamodb is running
-   ```
-4. When the SQLite CLI opens, enter `.quit`.
+Detailed instructions on how to access the API endpoints can be found in the project document under `Accessing API Endpoints`.
