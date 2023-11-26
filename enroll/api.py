@@ -46,105 +46,94 @@ def list_all_classes():
 
 @app.post("/enroll/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}", status_code=status.HTTP_201_CREATED)
 def enroll_student_in_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):    
-
     check_if_frozen = dynamodb_resource.execute_statement(
         Statement=f"Select IsFrozen FROM Freeze",
         ConsistentRead=True
-    )   
+    )
+
     if check_if_frozen['Items'][0]['IsFrozen']['N'] =='1':
-        return {"message": f"Enrollments frozen"}
+        return {"message": f"Enrollments frozen hence not moving any items from waitlist, required student has been dropped"}
     
-    classes=dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Classes WHERE ClassID={classid} AND SectionNumber={sectionid}",
-        ConsistentRead=True
-    )   
-    output=classes['Items'][0]
-    print(output)
-    if not classes:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Class not found")
-
-    enrolled = dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid} AND StudentID={studentid} AND EnrollmentStatus='ENROLLED'",
-        ConsistentRead=True
-    )
-    enroll_count=dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Enrollments WHERE ClassID={classid} AND SectionNumber={sectionid}",
-        ConsistentRead=True
-    )
-    enroll_count=len(enroll_count['Items'])
-    print("This is enroll_count" + str(enroll_count))
-    if enrolled['Items']:
-        print("This is enrolled_output" + str(enrolled['Items']))
-
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Student already enrolled")
-    enrolled_output=enrolled['Items']
-
-    if not enrolled_output:
-        print('is this executing???')
-        enrollments = 0
     else:
-        enrollments+=1
-   
-    if enrolled['Items']:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Student already enrolled")
-    
-    class_section = classes["Items"][0]["SectionNumber"]
-    class_section = int(class_section['N'])
-    print(class_section)
-    print(sectionid)
-    count = dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Enrollments WHERE ClassID={classid} and SectionID={sectionid}",
-        ConsistentRead=True
-    )
-
-    count=int(output['MaximumEnrollment']['N'])
-    print("This is the count for max en " +str(count))
-    max_waitlist= int(output['WaitlistMaximum']['N'])
-    waitlist_count = r.zcard(f"waitlist{classid}:{sectionid}") #REDIS
-    print("This is the count for max en " +str(count))
-
-    enrollment_id=dynamodb_resource.execute_statement(
-        Statement=f"Select * FROM Enrollments",
-        ConsistentRead=True
-    )
-    enrollment_id=len(enrollment_id['Items'])
-    print(enrollment_id)
-    enrollment_id+=1
-
-    if enroll_count < count:
+        roles = [word.strip() for word in roles.split(",")]
+        check_user(studentid, username, name, email, roles, db)
         
-        dynamodb_resource.execute_statement(
-            Statement=f"INSERT INTO Enrollments VALUE {{'EnrollmentID':{enrollment_id},'StudentID':{studentid},'SectionNumber':{sectionid},'ClassID':{classid},'EnrollmentStatus':'ENROLLED'}}",
+        classes = dynamodb_resource.execute_statement(
+            Statement=f"SELECT * FROM Classes WHERE ClassID={classid} AND SectionNumber={sectionid}",
+            ConsistentRead=True
+        ) 
+        if not classes['Items']:
+            return {"message": f"Class with {classid} and section {sectionid} not found."}
+
+        else:
+            maximum_enrollment = int(classes['Items'][0]['MaximumEnrollment']['N'])
+            print("Maximum allowed enrollment: ",maximum_enrollment)
+
+            waitlist_maximum = int(classes['Items'][0]['WaitlistMaximum']['N'])
+            print("Waitlist maximum: ",waitlist_maximum)
+
+        enroll_count = dynamodb_resource.execute_statement(
+            Statement=f"SELECT * FROM Enrollments WHERE ClassID = {classid} AND SectionNumber = {sectionid} ;",
+            ConsistentRead=True
         )
-        print("Enroll insert")
-        enrollments+=1
-        print("This is Enrollments" + str(enrollments))
-        enrollment_id+=1
-        return {"message": f"Enrolled student {studentid} in section {class_section} of class {classid}."}
-        
-    elif waitlist_count < max_waitlist:
-        waitlisted = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") #REDIS
-        if waitlisted:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Student already waitlisted")
+        count = len([int(item['EnrollmentID']['N']) for item in enroll_count['Items']])
+        print("Total students enrolled in class: ",count)
 
-        max_waitlist_position = r.zcard(f"waitlist:{classid}:{sectionid}") #REDIS
-        print("Position: " + str(max_waitlist_position))
-        if not max_waitlist_position: max_waitlist_position = 0
+        waitlist_key = f"waitlist:{classid}:{sectionid}"
+        waitlist_count = r.zcard(waitlist_key)
+        print("People in waitlist:", waitlist_count)
 
-        max_waitlist_position+=1
+        if maximum_enrollment - count >= 1:
+            already_enrolled = dynamodb_resource.execute_statement(
+                Statement=f"SELECT * FROM Enrollments WHERE StudentID = {studentid} AND ClassID = {classid} AND SectionNumber = {sectionid}",
+                ConsistentRead=True
+            )
 
-        r.zadd(f"waitlist:{classid}:{sectionid}",{studentid:max_waitlist_position})
-        return {"message": f"Enrolled in waitlist {max_waitlist_position} for class {classid} section {sectionid}."}
-    else:
-        return {"message": f"Unable to enroll in waitlist for the class, reached the maximum number of students"}
+            if already_enrolled['Items']:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Student already enrolled")
+            
+            else:
+                response = dynamodb_resource.execute_statement(
+                    Statement="SELECT * FROM Enrollments WHERE EnrollmentID >= 0 ORDER BY EnrollmentID DESC ;",
+                    ConsistentRead=True
+                )
+                enrollment_ids = [int(item['EnrollmentID']['N']) for item in response['Items']]
+
+                max_enrollment_id = max(enrollment_ids, default=0) + 1
+                print(f"The maximum EnrollmentID is: {max_enrollment_id}")
+
+                dynamodb_resource.put_item(
+                    TableName="Enrollments",
+                    Item={
+                        "EnrollmentID": {"N": str(max_enrollment_id)},
+                        "StudentID": {"N": str(studentid)},
+                        "ClassID": {"N": str(classid)},
+                        "SectionNumber": {"N": str(sectionid)},
+                        "EnrollmentStatus": {"S": "ENROLLED"}
+                    },
+                )
+                return {"message": f"Enrolled student {studentid} in class {classid} section {sectionid}."}
+
+        else:
+            if waitlist_count <= waitlist_maximum-1:
+                waitlisted = r.zscore(f"waitlist:{classid}:{sectionid}",f"{studentid}") 
+                print(waitlisted)
+                if waitlisted:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Student already waitlisted")
+
+                max_waitlist_position = r.zcard(f"waitlist:{classid}:{sectionid}") 
+                if not max_waitlist_position: max_waitlist_position = 0
+                max_waitlist_position+=1
+                print("Position: " + str(max_waitlist_position))
+
+                r.zadd(f"waitlist:{classid}:{sectionid}",{studentid:max_waitlist_position})
+                return {"message": f"Enrolled student {studentid} in waitlist position {max_waitlist_position} for class {classid} section {sectionid}."}
+            else:
+                return {"message": f"Unable to enroll in waitlist for the class, reached the maximum number of students"}
 
 @app.delete("/enrollmentdrop/{studentid}/{classid}/{sectionid}/{name}/{username}/{email}/{roles}")
 def drop_student_from_class(studentid: int, classid: int, sectionid: int, name: str, username: str, email: str, roles: str):
